@@ -1,0 +1,23 @@
+# Data files (too large for git)
+data/*.h5ad
+data/*.csv
+data/*.mtx
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Model outputs
+models/*.pkl
