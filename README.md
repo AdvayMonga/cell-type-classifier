@@ -1,6 +1,6 @@
 # Cell Type Classifier
 
-Project to classify cell types from single-cell gene expression data with logistic regression.
+Project to classify cell types from single-cell gene expression data. Trying out logistic regression, Random Forest, PyTorch Neural Network.
 
 ## Overview
 
