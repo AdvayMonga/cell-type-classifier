@@ -1,7 +1,7 @@
-# Data files (too large for git)
-data/*.h5ad
-data/*.csv
-data/*.mtx
+# Data files
+data/PBMC/*.h5ad
+data/PBMC/*.csv
+data/PBMC/*.mtx
 
 # Python
 __pycache__/
@@ -21,3 +21,14 @@ venv/
 
 # Model outputs
 models/*.pkl
+models/*.pt
+
+# visualizations
+visualizations/*.png
+visualizations/*.jpg
+visualizations/*.pdf
+visualizations/*.svg
+figures/*.png
+figures/*.jpg
+figures/*.pdf
+figures/*.svg

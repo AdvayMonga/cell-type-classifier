@@ -7,3 +7,7 @@ matplotlib
 seaborn
 jupyter
 tqdm
+python-igraph
+leidenalg
+torch
+scvelo
