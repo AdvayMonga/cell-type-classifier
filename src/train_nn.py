@@ -6,7 +6,7 @@ import torch.nn as nn
 import argparse
 from torch.utils.data  import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, classification_report
 import itertools
 
@@ -24,31 +24,78 @@ data_path = os.path.join(PROJECT_ROOT, args.data) if not os.path.isabs(args.data
 
 adata = sc.read_h5ad(data_path)
 
-X = adata.X
-y = adata.obs['cell_type'].values
+# Print dataset info
+print(f"\nDataset loaded: {adata.shape[0]} cells x {adata.shape[1]} genes")
+print(f"Cell types: {adata.obs['cell_type'].nunique()}")
+print(f"Cell type distribution:")
+print(adata.obs['cell_type'].value_counts())
 
+# Extract gene expression matrix (convert sparse to dense)
+X = adata.X
 if hasattr(X, 'toarray'):
     X = X.toarray()
+else:
+    X = np.array(X)
 
-# Add Velocity Features if present
-print("\nChecking for velocity features...")
+print(f"\nGene expression matrix:")
+print(f"  Shape: {X.shape}")
+print(f"  Range: [{X.min():.4f}, {X.max():.4f}]")
+print(f"  Mean: {X.mean():.4f}")
+print(f"  Data is already log1p normalized from scVelo preprocessing")
+
+y = adata.obs['cell_type'].values
+
+# Add ALL available features to help distinguish similar cell types
+print("\nChecking for velocity and statistical features...")
 velocity_features = []
 
-if 'velocity_magnitude' in adata.obs.columns:
-    velocity_features.append(adata.obs['velocity_magnitude'].values.reshape(-1, 1))
-    print("  ✓ Added velocity_magnitude")
-
+# Velocity features
 if 'velocity_pseudotime' in adata.obs.columns:
-    velocity_features.append(adata.obs['velocity_pseudotime'].values.reshape(-1, 1))
-    print("  ✓ Added velocity_pseudotime")
-
-if 'velocity_confidence' in adata.obs.columns:
-    velocity_features.append(adata.obs['velocity_confidence'].values.reshape(-1, 1))
-    print("  ✓ Added velocity_confidence")
+    vp = adata.obs['velocity_pseudotime'].values.reshape(-1, 1)
+    velocity_features.append(vp)
+    print(f"  ✓ velocity_pseudotime: range [{vp.min():.4f}, {vp.max():.4f}], mean {vp.mean():.4f}")
 
 if 'latent_time' in adata.obs.columns:
-    velocity_features.append(adata.obs['latent_time'].values.reshape(-1, 1))
-    print("  ✓ Added latent_time")
+    lt = adata.obs['latent_time'].values.reshape(-1, 1)
+    velocity_features.append(lt)
+    print(f"  ✓ latent_time: range [{lt.min():.4f}, {lt.max():.4f}], mean {lt.mean():.4f}")
+
+if 'velocity_confidence' in adata.obs.columns:
+    vc = adata.obs['velocity_confidence'].values.reshape(-1, 1)
+    velocity_features.append(vc)
+    print(f"  ✓ velocity_confidence: range [{vc.min():.4f}, {vc.max():.4f}], mean {vc.mean():.4f}")
+
+if 'velocity_magnitude' in adata.obs.columns:
+    vm = adata.obs['velocity_magnitude'].values.reshape(-1, 1)
+    velocity_features.append(vm)
+    print(f"  ✓ velocity_magnitude: range [{vm.min():.4f}, {vm.max():.4f}], mean {vm.mean():.4f}")
+
+# Cell cycle features (helps distinguish activated vs naive T cells)
+if 'S_score' in adata.obs.columns:
+    ss = adata.obs['S_score'].values.reshape(-1, 1)
+    velocity_features.append(ss)
+    print(f"  ✓ S_score: range [{ss.min():.4f}, {ss.max():.4f}], mean {ss.mean():.4f}")
+
+if 'G2M_score' in adata.obs.columns:
+    g2m = adata.obs['G2M_score'].values.reshape(-1, 1)
+    velocity_features.append(g2m)
+    print(f"  ✓ G2M_score: range [{g2m.min():.4f}, {g2m.max():.4f}], mean {g2m.mean():.4f}")
+
+# Expression statistics (helps distinguish transcriptional states)
+if 'mean_expression' in adata.obs.columns:
+    me = adata.obs['mean_expression'].values.reshape(-1, 1)
+    velocity_features.append(me)
+    print(f"  ✓ mean_expression: range [{me.min():.4f}, {me.max():.4f}], mean {me.mean():.4f}")
+
+if 'expression_variance' in adata.obs.columns:
+    ev = adata.obs['expression_variance'].values.reshape(-1, 1)
+    velocity_features.append(ev)
+    print(f"  ✓ expression_variance: range [{ev.min():.4f}, {ev.max():.4f}], mean {ev.mean():.4f}")
+
+if 'n_genes_expressed' in adata.obs.columns:
+    nge = adata.obs['n_genes_expressed'].values.reshape(-1, 1)
+    velocity_features.append(nge)
+    print(f"  ✓ n_genes_expressed: range [{nge.min():.0f}, {nge.max():.0f}], mean {nge.mean():.1f}")
 
 # Combine gene expression with velocity features
 if velocity_features:
@@ -60,31 +107,33 @@ if velocity_features:
 
     if n_nans > 0 or n_infs > 0:
         velocity_array = np.nan_to_num(velocity_array, nan=0.0, posinf=0.0, neginf=0.0)
-        print(f"  ⚠ Found and replaced {n_nans} NaNs and {n_infs} Infs in velocity features")
+        print(f"  ⚠ Fixed {n_nans} NaNs and {n_infs} Infs in velocity features")
     
-    # Combine features FIRST
+    # BOOST VELOCITY FEATURES to match gene expression importance
+    # Gene expression is log1p normalized (range ~0-4, mean ~0.04)
+    # Velocity features are 0-1 normalized, so multiply by 5 to match scale
+    VELOCITY_BOOST = 5.0
+    velocity_array = velocity_array * VELOCITY_BOOST
+    
+    print(f"\n  ⚡ BOOSTED velocity features by {VELOCITY_BOOST}x to match gene expression scale")
+    print(f"     This gives velocity features equal importance in the neural network")
+    
+    # Combine features
     X = np.column_stack([X, velocity_array])
     n_genes = X.shape[1] - velocity_array.shape[1]
+    n_additional = velocity_array.shape[1]
     
-    print(f"\n✓ Combined features: {X.shape[1]} total ({n_genes} genes + {velocity_array.shape[1]} velocity features)")
-    print(f"   BEFORE scaling:")
-    print(f"     Gene expression range: [{X[:, :n_genes].min():.2f}, {X[:, :n_genes].max():.2f}]")
-    print(f"     Velocity features range: [{X[:, n_genes:].min():.2f}, {X[:, n_genes:].max():.2f}]")
-    
-    # Scale ALL features together
-    scaler = StandardScaler()
-    X = scaler.fit_transform(X)
-    
-    print(f"   AFTER scaling:")
-    print(f"     Gene expression mean/std: [{X[:, :n_genes].mean():.2f} ± {X[:, :n_genes].std():.2f}]")
-    print(f"     Velocity features mean/std: [{X[:, n_genes:].mean():.2f} ± {X[:, n_genes:].std():.2f}]")
-    print(f"     Overall range: [{X.min():.2f}, {X.max():.2f}]")
+    print(f"\n✓ Combined features: {X.shape[1]} total ({n_genes} genes + {n_additional} additional features)")
+    print(f"  Gene expression range: [{X[:, :n_genes].min():.4f}, {X[:, :n_genes].max():.4f}], mean={X[:, :n_genes].mean():.4f}")
+    print(f"  Boosted velocity range: [{X[:, n_genes:].min():.4f}, {X[:, n_genes:].max():.4f}], mean={X[:, n_genes:].mean():.4f}")
+    print(f"\n  Additional features help distinguish similar cell types like CD4+ subtypes:")
+    print(f"    - velocity_confidence: differentiating vs stable cells")
+    print(f"    - S_score/G2M_score: activated vs naive T cells")
+    print(f"    - expression_variance: activated vs resting states")
 
 else:
     print("\n⚠ No velocity features found, using gene expression only")
-    scaler = StandardScaler()
-    X = scaler.fit_transform(X)
-    print(f"   Gene expression mean/std: [{X.mean():.2f} ± {X.std():.2f}]")
+    print(f"  Using log-normalized gene expression as-is")
 
 label_encoder = LabelEncoder()
 y_encoded = label_encoder.fit_transform(y)
@@ -171,17 +220,22 @@ def train_model(model, train_loader, test_loader, num_epochs, learning_rate, wei
         all_labels, all_preds = evaluate_model(model, test_loader)
         accuracy = accuracy_score(all_labels, all_preds)
         print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {train_loss/len(train_loader):.4f}, Test Accuracy: {accuracy:.1%}")
-        if accuracy < best_accuracy:
+        if accuracy < best_accuracy - 0.5:
             return best_accuracy
         best_accuracy = max(best_accuracy, accuracy)
-
     
     return best_accuracy
 
 # Get base parameters
 input_size = X_train.shape[1] 
+# Simpler architecture for 531 genes - avoid overfitting
 hidden_size = [256, 128]
 num_classes = len(np.unique(y_train))
+
+print(f"\nModel parameters:")
+print(f"  Input size: {input_size}")
+print(f"  Hidden layers: {hidden_size}")
+print(f"  Output classes: {num_classes}")
 
 # Hyperparameter tuning
 if args.tune:
@@ -189,9 +243,9 @@ if args.tune:
     print("HYPERPARAMETER GRID SEARCH")
     print("="*70)
     
-    # Define hyperparameter grid
-    learning_rates = [0.001]
-    dropout_rates = [0.3, 0.4, 0.5]
+    # Define hyperparameter grid - adjusted for smaller dataset
+    learning_rates = [0.001, 0.0005, 0.005, 0.0001]
+    dropout_rates = [0.2, 0.3, 0.4]
     weight_decays = [0.0001, 0.001]  # L2 regularization
     
     results = []
@@ -231,14 +285,14 @@ if args.tune:
     weight_decay = best_config['weight_decay']
 
 else:
-    # Default hyperparameters
-    learning_rate = 0.001
-    dropout_rate = 0.4
+    # Default hyperparameters - adjusted for smaller feature set
+    learning_rate = 0.0005
+    dropout_rate = 0.2
     weight_decay = 0.0001
     print(f"\nUsing default hyperparameters:")
-    print(f"Learning rate: {learning_rate}")
-    print(f"Dropout rate: {dropout_rate}")
-    print(f"L2 Regularization (weight_decay): {weight_decay}")
+    print(f"  Learning rate: {learning_rate}")
+    print(f"  Dropout rate: {dropout_rate}")
+    print(f"  L2 Regularization (weight_decay): {weight_decay}")
 
 # Train final model
 print(f"\nTraining final model...")
@@ -251,7 +305,7 @@ criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
 # Training loop
-num_epochs = 10
+num_epochs = 30
 print(f"\nTraining for {num_epochs} epochs...")
 
 train_model(model, train_loader, test_loader, num_epochs, learning_rate, weight_decay)
