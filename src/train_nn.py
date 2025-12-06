@@ -109,23 +109,14 @@ if velocity_features:
         velocity_array = np.nan_to_num(velocity_array, nan=0.0, posinf=0.0, neginf=0.0)
         print(f"  ⚠ Fixed {n_nans} NaNs and {n_infs} Infs in velocity features")
     
-    # BOOST VELOCITY FEATURES to match gene expression importance
-    # Gene expression is log1p normalized (range ~0-4, mean ~0.04)
-    # Velocity features are 0-1 normalized, so multiply by 5 to match scale
-    VELOCITY_BOOST = 5.0
-    velocity_array = velocity_array * VELOCITY_BOOST
-    
-    print(f"\n  ⚡ BOOSTED velocity features by {VELOCITY_BOOST}x to match gene expression scale")
-    print(f"     This gives velocity features equal importance in the neural network")
-    
-    # Combine features
+    # Combine features (already normalized to 0-1 in velocity_data.py)
     X = np.column_stack([X, velocity_array])
     n_genes = X.shape[1] - velocity_array.shape[1]
     n_additional = velocity_array.shape[1]
     
     print(f"\n✓ Combined features: {X.shape[1]} total ({n_genes} genes + {n_additional} additional features)")
     print(f"  Gene expression range: [{X[:, :n_genes].min():.4f}, {X[:, :n_genes].max():.4f}], mean={X[:, :n_genes].mean():.4f}")
-    print(f"  Boosted velocity range: [{X[:, n_genes:].min():.4f}, {X[:, n_genes:].max():.4f}], mean={X[:, n_genes:].mean():.4f}")
+    print(f"  Velocity features range: [{X[:, n_genes:].min():.4f}, {X[:, n_genes:].max():.4f}], mean={X[:, n_genes:].mean():.4f}")
     print(f"\n  Additional features help distinguish similar cell types like CD4+ subtypes:")
     print(f"    - velocity_confidence: differentiating vs stable cells")
     print(f"    - S_score/G2M_score: activated vs naive T cells")
@@ -229,7 +220,7 @@ def train_model(model, train_loader, test_loader, num_epochs, learning_rate, wei
 # Get base parameters
 input_size = X_train.shape[1] 
 # Simpler architecture for 531 genes - avoid overfitting
-hidden_size = [256, 128]
+hidden_size = [256, 512, 256]
 num_classes = len(np.unique(y_train))
 
 print(f"\nModel parameters:")
@@ -305,7 +296,7 @@ criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
 # Training loop
-num_epochs = 30
+num_epochs = 5
 print(f"\nTraining for {num_epochs} epochs...")
 
 train_model(model, train_loader, test_loader, num_epochs, learning_rate, weight_decay)

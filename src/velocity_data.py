@@ -88,63 +88,69 @@ def main():
     
     print(f"{'='*60}\n")
 
-    # Remove low-quality genes BUT preserve cell cycle genes
+    # Remove low-quality genes BUT preserve critical markers
     print("\nRemoving low-quality genes...")
 
     gene_names_upper = adata.var_names.str.upper()
 
-    # Define cell cycle genes to ALWAYS keep
+    # Define S-phase cell cycle genes to ALWAYS keep
     s_genes = ['MCM5', 'PCNA', 'TYMS', 'FEN1', 'MCM2', 'MCM4', 'RRM1', 'UNG', 'GINS2', 'MCM6', 
-               'CDCA7', 'DTL', 'PRIM1', 'UHRF1', 'MLF1IP', 'HELLS', 'RFC2', 'RPA2', 'NASP', 
+               'CDCA7', 'DTL', 'PRIM1', 'UHRF1', 'HELLS', 'RFC2', 'RPA2', 'NASP', 
                'RAD51AP1', 'GMNN', 'WDR76', 'SLBP', 'CCNE2', 'UBR7', 'POLD3', 'MSH2', 'ATAD2', 
                'RAD51', 'RRM2', 'CDC45', 'CDC6', 'EXO1', 'TIPIN', 'DSCC1', 'BLM', 'CASP8AP2', 
                'USP1', 'CLSPN', 'POLA1', 'CHAF1B', 'BRIP1', 'E2F8']
 
+    # Define G2M-phase cell cycle genes to ALWAYS keep
     g2m_genes = ['HMGB2', 'CDK1', 'NUSAP1', 'UBE2C', 'BIRC5', 'TPX2', 'TOP2A', 'NDC80', 'CKS2', 
-                 'NUF2', 'CKS1B', 'MKI67', 'TMPO', 'CENPF', 'TACC3', 'FAM64A', 'SMC4', 'CCNB2', 
+                 'NUF2', 'CKS1B', 'MKI67', 'TMPO', 'CENPF', 'TACC3', 'SMC4', 'CCNB2', 
                  'CKAP2L', 'CKAP2', 'AURKB', 'BUB1', 'KIF11', 'ANP32E', 'TUBB4B', 'GTSE1', 
-                 'KIF20B', 'HJURP', 'CDCA3', 'HN1', 'CDC20', 'TTK', 'CDC25C', 'KIF2C', 'RANGAP1', 
+                 'KIF20B', 'HJURP', 'CDCA3', 'CDC20', 'TTK', 'CDC25C', 'KIF2C', 'RANGAP1', 
                  'NCAPD2', 'DLGAP5', 'CDCA2', 'CDCA8', 'ECT2', 'KIF23', 'HMMR', 'AURKA', 'PSRC1', 
                  'ANLN', 'LBR', 'CKAP5', 'CENPE', 'CTCF', 'NEK2', 'G2E3', 'GAS2L3', 'CBX5', 'CENPA']
 
-    cell_cycle_genes_upper = set([g.upper() for g in s_genes + g2m_genes])
-    is_cell_cycle_gene = gene_names_upper.isin(cell_cycle_genes_upper)
+    # Define immune cell markers to ALWAYS keep
+    immune_markers = ['CD3D', 'CD3E', 'CD4', 'CD8A', 'CD8B', 'MS4A1', 'CD19', 'CD14', 
+                      'FCGR3A', 'CD68', 'NCAM1', 'IL7R', 'CCR7', 'NKG7', 'GNLY']
 
+    # Combine all protected genes
+    protected_genes = s_genes + g2m_genes + immune_markers
+    protected_genes_upper = set([g.upper() for g in protected_genes])
+    is_protected_gene = gene_names_upper.isin(protected_genes_upper)
+
+    # Identify junk genes to remove
     pseudogenes = gene_names_upper.str.match(r'^RP[^SL]')  # RP but not RPS or RPL
     olfactory = gene_names_upper.str.startswith('OR')
     mitochondrial = gene_names_upper.str.startswith('MT-')
     ribosomal = gene_names_upper.str.startswith(('RPS', 'RPL'))
 
-    # Don't remove cell cycle genes even if they match patterns
-    genes_to_remove = (pseudogenes | olfactory | mitochondrial | ribosomal) & ~is_cell_cycle_gene
+    # NEVER remove protected genes, even if they match removal patterns
+    genes_to_remove = (pseudogenes | olfactory | mitochondrial | ribosomal) & ~is_protected_gene
 
     print(f"   Pseudogenes (RP*): {pseudogenes.sum()}")
-    print(f"   Olfactory receptors (OR): {olfactory.sum()}")
-    print(f"   Mitochondrial genes (MT-): {mitochondrial.sum()}")
-    print(f"   Ribosomal genes (RPS, RPL): {ribosomal.sum()}")
-    print(f"   Cell cycle genes in dataset: {is_cell_cycle_gene.sum()}")
+    print(f"   Olfactory receptors (OR*): {olfactory.sum()}")
+    print(f"   Mitochondrial genes (MT-*): {mitochondrial.sum()}")
+    print(f"   Ribosomal genes (RPS*, RPL*): {ribosomal.sum()}")
+    print(f"   Protected genes found: {is_protected_gene.sum()} ({len(s_genes)} S-phase + {len(g2m_genes)} G2M + {len(immune_markers)} immune)")
     print(f"   Total genes to remove: {genes_to_remove.sum()}")
 
     adata = adata[:, ~genes_to_remove].copy()
-    print(f"   After filtering: {adata.shape[0]} cells x {adata.shape[1]} genes")
+    print(f"   ✓ After filtering: {adata.shape[0]} cells x {adata.shape[1]} genes")
 
     # Preprocessing
     print("\nPreprocessing data...")
     
     # Filter and normalize - keep all genes that pass basic quality filter
-    scv.pp.filter_genes(adata, min_shared_counts=10)
-    print(f"   ✓ After min_shared_counts filter: {adata.n_vars} genes")
+    scv.pp.filter_genes(adata, min_cells=10)
+    print(f"   ✓ After min_cells filter: {adata.n_vars} genes")
     
     scv.pp.normalize_per_cell(adata)
     print(f"   ✓ Normalized per cell")
-    
-    # SKIPPING dispersion filtering to keep all ~10k+ quality genes
-    # instead of filtering down to top 3000 variable genes
-    print(f"   ✓ Skipping dispersion filter - keeping all {adata.n_vars} genes")
-    
-    # Check cell cycle gene retention
-    cell_cycle_mask = adata.var_names.str.upper().isin(cell_cycle_genes_upper)
-    print(f"   ✓ Cell cycle genes present: {cell_cycle_mask.sum()}")
+
+    print(f"   ✓ Skipping dispersion filter")
+
+    # Check protected gene retention
+    protected_mask = adata.var_names.str.upper().isin(protected_genes_upper)
+    print(f"   ✓ Protected genes retained: {protected_mask.sum()}/{len(protected_genes)}")
     
     # Log transform BEFORE computing neighbors (critical for proper neighbor graph)
     sc.pp.log1p(adata)
@@ -190,30 +196,52 @@ def main():
     # Extract velocity features as scalars
     print("\nExtracting velocity features...")
 
-    # 1. Velocity pseudotime (trajectory position) - PER CELL
-    scv.tl.velocity_pseudotime(adata)
-    print(f"   Added velocity_pseudotime (mean: {adata.obs['velocity_pseudotime'].mean():.4f})")
-
-    # 2. Latent time (developmental progression) - PER CELL
-    try:
-        scv.tl.recover_dynamics(adata, n_jobs=4)
-        scv.tl.latent_time(adata)
-        print(f"   Added latent_time (mean: {adata.obs['latent_time'].mean():.4f})")
-    except Exception as e:
-        print(f"   Warning: Could not compute latent_time: {e}")
-        adata.obs['latent_time'] = adata.obs['velocity_pseudotime'].copy()
-
-    # 3. Velocity confidence (certainty of velocity estimate) - PER CELL
-    scv.tl.velocity_confidence(adata)
-    print(f"   Added velocity_confidence (mean: {adata.obs['velocity_confidence'].mean():.4f})")
-
-    # 4. Velocity magnitude (speed of transcriptional change) - PER CELL
+    # Get velocity matrix for feature computation
     velocity_matrix = adata.layers['velocity']
     if hasattr(velocity_matrix, 'toarray'):
         velocity_matrix = velocity_matrix.toarray()
+    
+    # Compute velocity magnitude (L2 norm)
     velocity_magnitude = np.sqrt((velocity_matrix ** 2).sum(axis=1))
+    
+    # 1. Velocity pseudotime - normalized velocity magnitude
+    # (Skipping expensive scv.tl.velocity_pseudotime which takes 15+ min)
+    adata.obs['velocity_pseudotime'] = (velocity_magnitude - velocity_magnitude.min()) / \
+                                        (velocity_magnitude.max() - velocity_magnitude.min())
+    print(f"   ✓ Added velocity_pseudotime (mean: {adata.obs['velocity_pseudotime'].mean():.4f})")
+
+    # 2. Latent time - use velocity direction consistency as proxy
+    # (Skipping scv.tl.latent_time which recomputes neighbors and is very slow)
+    # Compute per-gene velocity consistency (signed velocity magnitude)
+    velocity_direction = np.sign(velocity_matrix).mean(axis=1)
+    
+    # Ensure it's a flat 1D array, not a matrix
+    if hasattr(velocity_direction, 'A1'):
+        velocity_direction = velocity_direction.A1  # Sparse matrix to flat array
+    else:
+        velocity_direction = np.asarray(velocity_direction).flatten()
+    
+    # Normalize to 0-1 range
+    vd_min = velocity_direction.min()
+    vd_max = velocity_direction.max()
+    vd_range = vd_max - vd_min
+    
+    if vd_range < 1e-10:
+        # All velocities are the same direction - set to 0.5 (neutral)
+        print(f"   ⚠️  All velocity directions identical, setting latent_time to 0.5")
+        adata.obs['latent_time'] = np.full(len(velocity_direction), 0.5)
+    else:
+        adata.obs['latent_time'] = (velocity_direction - vd_min) / vd_range
+    
+    print(f"   ✓ Added latent_time proxy (mean: {adata.obs['latent_time'].mean():.4f})")
+
+    # 3. Velocity confidence (certainty of velocity estimate) - PER CELL
+    scv.tl.velocity_confidence(adata)
+    print(f"   ✓ Added velocity_confidence (mean: {adata.obs['velocity_confidence'].mean():.4f})")
+
+    # 4. Velocity magnitude (raw magnitude values)
     adata.obs['velocity_magnitude'] = velocity_magnitude
-    print(f"   Added velocity_magnitude (mean: {velocity_magnitude.mean():.4f})")
+    print(f"   ✓ Added velocity_magnitude (mean: {velocity_magnitude.mean():.4f})")
 
     # 5. Cell cycle phase scores (helps distinguish proliferating cells)
     print("\nComputing cell cycle scores...")
@@ -258,13 +286,57 @@ def main():
     else:
         X_dense = adata.X
     
-    adata.obs['mean_expression'] = X_dense.mean(axis=1)
-    adata.obs['expression_variance'] = X_dense.var(axis=1)
-    adata.obs['n_genes_expressed'] = (X_dense > 0).sum(axis=1)
+    # Compute statistics and ensure they're 1D arrays
+    mean_expr = np.asarray(X_dense.mean(axis=1)).flatten()
+    expr_var = np.asarray(X_dense.var(axis=1)).flatten()
+    n_genes = np.asarray((X_dense > 0).sum(axis=1)).flatten()
     
-    print(f"   Added mean_expression (mean: {adata.obs['mean_expression'].mean():.4f})")
-    print(f"   Added expression_variance (mean: {adata.obs['expression_variance'].mean():.4f})")
-    print(f"   Added n_genes_expressed (mean: {adata.obs['n_genes_expressed'].mean():.1f})")
+    adata.obs['mean_expression'] = mean_expr
+    adata.obs['expression_variance'] = expr_var
+    adata.obs['n_genes_expressed'] = n_genes
+    
+    print(f"   Added mean_expression (mean: {mean_expr.mean():.4f})")
+    print(f"   Added expression_variance (mean: {expr_var.mean():.4f})")
+    print(f"   Added n_genes_expressed (mean: {n_genes.mean():.1f})")
+
+    # NORMALIZE ALL FEATURES TO 0-1 RANGE to match gene expression scale
+    print("\nNormalizing velocity features to match gene expression scale...")
+    velocity_features = ['velocity_pseudotime', 'latent_time', 'velocity_confidence', 
+                         'velocity_magnitude', 'S_score', 'G2M_score', 
+                         'mean_expression', 'expression_variance', 'n_genes_expressed']
+    
+    for feat in velocity_features:
+        if feat in adata.obs.columns:
+            values = adata.obs[feat].values
+            
+            # Check for NaNs BEFORE normalization (shouldn't exist!)
+            nan_count = np.isnan(values).sum()
+            if nan_count > 0:
+                print(f"   ❌ ERROR: {feat} contains {nan_count} NaNs BEFORE normalization!")
+                print(f"      This indicates a bug in the computation. Replacing with 0...")
+                values = np.nan_to_num(values, nan=0.0)
+            
+            # Normalize to 0-1 range
+            val_min = values.min()
+            val_max = values.max()
+            val_range = val_max - val_min
+            
+            if val_range < 1e-10:
+                # All values are identical
+                print(f"   ⚠️  {feat} has no variance (constant: {val_min:.4f}), setting to 0.5")
+                normalized = np.full_like(values, 0.5)
+            else:
+                normalized = (values - val_min) / val_range
+            
+            # Check for NaNs AFTER normalization (shouldn't happen if fixed above)
+            nan_count_after = np.isnan(normalized).sum()
+            if nan_count_after > 0:
+                print(f"   ❌ ERROR: {feat} produced {nan_count_after} NaNs AFTER normalization!")
+                print(f"      Replacing with 0.0 as fallback")
+                normalized = np.nan_to_num(normalized, nan=0.0)
+            
+            adata.obs[feat] = normalized
+            print(f"   ✓ Normalized {feat}: range [{normalized.min():.4f}, {normalized.max():.4f}], mean={normalized.mean():.4f}")
 
     # Visualizations
     if args.plot:
