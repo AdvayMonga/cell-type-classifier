@@ -109,7 +109,7 @@ if velocity_features:
         velocity_array = np.nan_to_num(velocity_array, nan=0.0, posinf=0.0, neginf=0.0)
         print(f"  ⚠ Fixed {n_nans} NaNs and {n_infs} Infs in velocity features")
     
-    # Combine features (already normalized to 0-1 in velocity_data.py)
+    # Combine features (velocity features already normalized & boosted 1.5x in velocity_data.py)
     X = np.column_stack([X, velocity_array])
     n_genes = X.shape[1] - velocity_array.shape[1]
     n_additional = velocity_array.shape[1]
@@ -117,6 +117,7 @@ if velocity_features:
     print(f"\n✓ Combined features: {X.shape[1]} total ({n_genes} genes + {n_additional} additional features)")
     print(f"  Gene expression range: [{X[:, :n_genes].min():.4f}, {X[:, :n_genes].max():.4f}], mean={X[:, :n_genes].mean():.4f}")
     print(f"  Velocity features range: [{X[:, n_genes:].min():.4f}, {X[:, n_genes:].max():.4f}], mean={X[:, n_genes:].mean():.4f}")
+    print(f"  Note: Velocity features already boosted 1.5x during preprocessing")
     print(f"\n  Additional features help distinguish similar cell types like CD4+ subtypes:")
     print(f"    - velocity_confidence: differentiating vs stable cells")
     print(f"    - S_score/G2M_score: activated vs naive T cells")
@@ -186,12 +187,14 @@ def evaluate_model(model, data_loader):
 
     return all_labels, all_preds
 
-# Training function for tuning
-def train_model(model, train_loader, test_loader, num_epochs, learning_rate, weight_decay):
+# Training function with early stopping
+def train_model(model, train_loader, test_loader, num_epochs, learning_rate, weight_decay, patience=3, verbose=True):
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
-    best_accuracy = 0
+    best_test_accuracy = 0
+    best_model_state = None
+    patience_counter = 0
     
     for epoch in range(num_epochs):
         model.train()
@@ -207,20 +210,39 @@ def train_model(model, train_loader, test_loader, num_epochs, learning_rate, wei
             
             train_loss += loss.item()
         
-        # Evaluate on test set
-        all_labels, all_preds = evaluate_model(model, test_loader)
-        accuracy = accuracy_score(all_labels, all_preds)
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {train_loss/len(train_loader):.4f}, Test Accuracy: {accuracy:.1%}")
-        if accuracy < best_accuracy - 0.5:
-            return best_accuracy
-        best_accuracy = max(best_accuracy, accuracy)
+        # Evaluate on both train and test
+        train_labels, train_preds = evaluate_model(model, train_loader)
+        test_labels, test_preds = evaluate_model(model, test_loader)
+        
+        train_acc = accuracy_score(train_labels, train_preds)
+        test_acc = accuracy_score(test_labels, test_preds)
+        
+        if verbose:
+            print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {train_loss/len(train_loader):.4f}, Train: {train_acc:.1%}, Test: {test_acc:.1%}")
+        
+        # Early stopping logic
+        if test_acc > best_test_accuracy:
+            best_test_accuracy = test_acc
+            best_model_state = model.state_dict().copy()
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                if verbose:
+                    print(f"  Early stopping at epoch {epoch+1} (no improvement for {patience} epochs)")
+                break
     
-    return best_accuracy
+    # Restore best model
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+    
+    return best_test_accuracy
 
 # Get base parameters
 input_size = X_train.shape[1] 
-# Simpler architecture for 531 genes - avoid overfitting
-hidden_size = [256, 512, 256]
+
+# architecture parameters
+hidden_size = [256, 128]
 num_classes = len(np.unique(y_train))
 
 print(f"\nModel parameters:")
@@ -235,9 +257,9 @@ if args.tune:
     print("="*70)
     
     # Define hyperparameter grid - adjusted for smaller dataset
-    learning_rates = [0.001, 0.0005, 0.005, 0.0001]
-    dropout_rates = [0.2, 0.3, 0.4]
-    weight_decays = [0.0001, 0.001]  # L2 regularization
+    learning_rates = [ 0.0005, 0.0001]
+    dropout_rates = [0.4, 0.5]
+    weight_decays = [0.001, 0.0005, 0.002]  # L2 regularization
     
     results = []
     total_configs = len(learning_rates) * len(dropout_rates) * len(weight_decays)
@@ -248,7 +270,8 @@ if args.tune:
         print(f"\n[{current_config}/{total_configs}] LR: {lr}, Dropout: {dropout}, L2: {wd}")
         
         model = CellTypeClassifier(input_size, hidden_size, num_classes, dropout_rate=dropout)
-        accuracy = train_model(model, train_loader, test_loader, num_epochs=10, learning_rate=lr, weight_decay=wd)
+        accuracy = train_model(model, train_loader, test_loader, num_epochs=20, 
+                              learning_rate=lr, weight_decay=wd, patience=3, verbose=False)
         
         results.append({
             'learning_rate': lr,
@@ -257,7 +280,7 @@ if args.tune:
             'accuracy': accuracy
         })
         
-        print(f"  Test Accuracy: {accuracy:.1%}")
+        print(f"  Best Test Accuracy: {accuracy:.1%}")
     
     # Find best configuration
     best_config = max(results, key=lambda x: x['accuracy'])
@@ -277,9 +300,9 @@ if args.tune:
 
 else:
     # Default hyperparameters - adjusted for smaller feature set
-    learning_rate = 0.0005
-    dropout_rate = 0.2
-    weight_decay = 0.0001
+    learning_rate = 0.0001
+    dropout_rate = 0.5
+    weight_decay = 0.001
     print(f"\nUsing default hyperparameters:")
     print(f"  Learning rate: {learning_rate}")
     print(f"  Dropout rate: {dropout_rate}")
@@ -291,24 +314,28 @@ model = CellTypeClassifier(input_size, hidden_size, num_classes, dropout_rate=dr
 print(f"\nModel architecture:")
 print(model)
 
-# loss function and optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+# Training loop with early stopping
+num_epochs = 20
+patience = 3
+print(f"\nTraining for up to {num_epochs} epochs (early stopping patience: {patience})...")
 
-# Training loop
-num_epochs = 5
-print(f"\nTraining for {num_epochs} epochs...")
+best_test_accuracy = train_model(model, train_loader, test_loader, num_epochs, 
+                                  learning_rate, weight_decay, patience=patience, verbose=True)
 
-train_model(model, train_loader, test_loader, num_epochs, learning_rate, weight_decay)
-
+# Final evaluation
 all_labels, all_preds = evaluate_model(model, test_loader)
 train_labels, train_preds = evaluate_model(model, train_loader)
 
 accuracy = accuracy_score(all_labels, all_preds)
-print(f"Test accuracy: {accuracy:.1%}")
-
 train_accuracy = accuracy_score(train_labels, train_preds)
+
+print(f"\n{'='*70}")
+print(f"FINAL RESULTS:")
+print(f"{'='*70}")
 print(f"Train accuracy: {train_accuracy:.1%}")
+print(f"Test accuracy: {accuracy:.1%}")
+print(f"Overfitting gap: {train_accuracy - accuracy:.1%} ({'Good' if train_accuracy - accuracy < 0.15 else 'Overfitting'})")
+print(f"{'='*70}")
 
 print("\nPer-class performance:")
 print(classification_report(

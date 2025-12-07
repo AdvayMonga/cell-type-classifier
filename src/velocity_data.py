@@ -159,7 +159,11 @@ def main():
 
     # Now compute PCA, neighbors, and moments on log-transformed data
     print("\n   Computing PCA, neighbors, and moments...")
-    sc.pp.highly_variable_genes(adata, n_top_genes=2000, subset=False)
+    
+    # DO NOT select genes here - keep all genes for flexibility
+    # Gene selection will be done in select_genes.py as a separate fast step
+    print(f"   ✓ Keeping all {adata.n_vars} genes (no selection)")
+    
     sc.tl.pca(adata, n_comps=50)
     print(f"   ✓ PCA computed (50 components)")
 
@@ -299,11 +303,14 @@ def main():
     print(f"   Added expression_variance (mean: {expr_var.mean():.4f})")
     print(f"   Added n_genes_expressed (mean: {n_genes.mean():.1f})")
 
-    # NORMALIZE ALL FEATURES TO 0-1 RANGE to match gene expression scale
-    print("\nNormalizing velocity features to match gene expression scale...")
+    # NORMALIZE ALL FEATURES TO 0-1 RANGE, then BOOST by 1.5x
+    print("\nNormalizing and boosting velocity features...")
     velocity_features = ['velocity_pseudotime', 'latent_time', 'velocity_confidence', 
                          'velocity_magnitude', 'S_score', 'G2M_score', 
                          'mean_expression', 'expression_variance', 'n_genes_expressed']
+    
+    velocity_boost_factor = 1.5
+    print(f"   Boost factor: {velocity_boost_factor}x (to balance with gene expression 0-4.38 range)")
     
     for feat in velocity_features:
         if feat in adata.obs.columns:
@@ -335,8 +342,11 @@ def main():
                 print(f"      Replacing with 0.0 as fallback")
                 normalized = np.nan_to_num(normalized, nan=0.0)
             
-            adata.obs[feat] = normalized
-            print(f"   ✓ Normalized {feat}: range [{normalized.min():.4f}, {normalized.max():.4f}], mean={normalized.mean():.4f}")
+            # BOOST by 1.5x to increase influence relative to genes
+            boosted = normalized * velocity_boost_factor
+            
+            adata.obs[feat] = boosted
+            print(f"   ✓ Normalized & boosted {feat}: range [{boosted.min():.4f}, {boosted.max():.4f}], mean={boosted.mean():.4f}")
 
     # Visualizations
     if args.plot:
