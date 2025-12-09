@@ -108,9 +108,52 @@ def main():
                  'NCAPD2', 'DLGAP5', 'CDCA2', 'CDCA8', 'ECT2', 'KIF23', 'HMMR', 'AURKA', 'PSRC1', 
                  'ANLN', 'LBR', 'CKAP5', 'CENPE', 'CTCF', 'NEK2', 'G2E3', 'GAS2L3', 'CBX5', 'CENPA']
 
-    # Define immune cell markers to ALWAYS keep
-    immune_markers = ['CD3D', 'CD3E', 'CD4', 'CD8A', 'CD8B', 'MS4A1', 'CD19', 'CD14', 
-                      'FCGR3A', 'CD68', 'NCAM1', 'IL7R', 'CCR7', 'NKG7', 'GNLY']
+    # CRITICAL: Cell surface markers from Zheng et al. 2017 Nature Communications
+    # These are the markers used for FACS sorting and are essential for classification
+    cell_surface_markers = [
+        # T cell markers (CD3 complex)
+        'CD3D', 'CD3E', 'CD3G',          # Pan T cell markers
+        'CD4',                            # T helper cells
+        'CD8A', 'CD8B',                  # Cytotoxic T cells
+        'IL7R',                           # CD127 - Naive T cells
+        'CCR7',                           # Naive T cell homing
+        'CD27',                           # Memory T cells
+        'SELL',                           # L-selectin (CD62L) - Naive
+        
+        # B cell markers
+        'CD19',                           # Pan B cell
+        'MS4A1',                          # CD20
+        'CD79A', 'CD79B',                # B cell receptor components
+        
+        # NK cell markers
+        'NCAM1',                          # CD56 - NK cells
+        'NKG7', 'GNLY',                  # NK cytotoxicity
+        'KLRD1', 'KLRB1',                # Killer cell receptors
+        
+        # Monocyte markers
+        'CD14',                           # Classical monocytes
+        'FCGR3A',                         # CD16 - Non-classical monocytes
+        'S100A8', 'S100A9',              # Monocyte-specific calgranulins
+        'LYZ',                            # Lysozyme
+        'CD68',                           # Macrophage marker
+        
+        # Dendritic cell markers
+        'FCER1A',                         # Classical DC
+        'CD1C',                           # cDC2
+        
+        # Stem cell markers
+        'CD34',                           # Hematopoietic stem cells
+        
+        # Pan-leukocyte
+        'PTPRC',                          # CD45 - All leukocytes
+    ]
+
+    # Combine all protected genes
+    immune_markers = cell_surface_markers  # For backward compatibility
+    print(f"   Protected gene categories:")
+    print(f"     - S-phase cell cycle: {len(s_genes)} genes")
+    print(f"     - G2M-phase cell cycle: {len(g2m_genes)} genes")
+    print(f"     - Cell surface markers (Zheng 2017): {len(cell_surface_markers)} genes")
 
     # Combine all protected genes
     protected_genes = s_genes + g2m_genes + immune_markers
@@ -156,6 +199,13 @@ def main():
     sc.pp.log1p(adata)
     print(f"   ✓ Log-transformed data")
     print(f"   Final gene count: {adata.n_vars} genes")
+    
+    # CRITICAL: Save unsmoothed log-transformed data for classification
+    # The moments() function will smooth adata.X across neighbors, which helps velocity
+    # estimation but hurts classification by blurring cell type boundaries
+    adata.layers['unsmoothed_log'] = adata.X.copy()
+    print(f"   ✓ Saved unsmoothed log-transformed data to layer 'unsmoothed_log' for classification")
+    print(f"      (adata.X will be smoothed by moments, but unsmoothed version preserved)")
 
     # Now compute PCA, neighbors, and moments on log-transformed data
     print("\n   Computing PCA, neighbors, and moments...")
@@ -172,8 +222,10 @@ def main():
     print(f"   ✓ Neighbors computed (30 PCs, 30 neighbors)")
 
     # Compute moments using pre-computed neighbors
+    # This smooths adata.X across neighbors (good for velocity, preserved unsmoothed for classification)
     scv.pp.moments(adata, n_pcs=None, n_neighbors=None)  # Use pre-computed
-    print(f"   ✓ Moments computed")
+    print(f"   ✓ Moments computed (adata.X is now smoothed for velocity estimation)")
+    print(f"   ✓ Unsmoothed data available in layer 'unsmoothed_log' for classification")
     print(f"   Final shape: {adata.shape[0]} cells x {adata.shape[1]} genes")
 
    # Estimate RNA velocity

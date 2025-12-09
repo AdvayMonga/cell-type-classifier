@@ -8,6 +8,7 @@ from torch.utils.data  import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, classification_report
+from sklearn.utils.class_weight import compute_class_weight
 import itertools
 
 # Get the project root directory (parent of src)
@@ -31,7 +32,18 @@ print(f"Cell type distribution:")
 print(adata.obs['cell_type'].value_counts())
 
 # Extract gene expression matrix (convert sparse to dense)
-X = adata.X
+# CRITICAL: Use unsmoothed data for classification to preserve cell type boundaries
+# The scVelo moments() function smooths adata.X across neighbors (good for velocity, bad for classification)
+if 'unsmoothed_log' in adata.layers:
+    print(f"\n✓ Using UNSMOOTHED log-transformed data for classification")
+    print(f"  (scVelo moments() smoothed adata.X across neighbors - this blurs cell type boundaries)")
+    print(f"  (unsmoothed_log layer preserves sharp boundaries needed for classification)")
+    X = adata.layers['unsmoothed_log']
+else:
+    print(f"\n⚠ WARNING: Using SMOOTHED data (unsmoothed_log layer not found)")
+    print(f"  This may hurt classification by blurring cell type boundaries!")
+    X = adata.X
+
 if hasattr(X, 'toarray'):
     X = X.toarray()
 else:
@@ -41,7 +53,7 @@ print(f"\nGene expression matrix:")
 print(f"  Shape: {X.shape}")
 print(f"  Range: [{X.min():.4f}, {X.max():.4f}]")
 print(f"  Mean: {X.mean():.4f}")
-print(f"  Data is already log1p normalized from scVelo preprocessing")
+print(f"  Data is log1p normalized from scVelo preprocessing")
 
 y = adata.obs['cell_type'].values
 
@@ -140,6 +152,20 @@ X_train, X_test, y_train, y_test = train_test_split(
 print(f"Training set: {X_train.shape[0]} cells")
 print(f"Test set: {X_test.shape[0]} cells")
 
+# Print class distribution
+print(f"\n{'='*70}")
+print(f"CLASS DISTRIBUTION")
+print(f"{'='*70}")
+for i, label in enumerate(label_encoder.classes_):
+    n_samples_train = (y_train == i).sum()
+    n_samples_test = (y_test == i).sum()
+    print(f"{label:35s}: {n_samples_train:5d} train, {n_samples_test:4d} test")
+print(f"{'='*70}\n")
+
+# Note: Class weights were tested but hurt performance (58% → 47%)
+# Even with 10x cap, they degraded major class accuracy
+# Sticking with unweighted loss and relying on unsmoothed data for better boundaries
+
 # Convert to PyTorch tensors
 X_train_tensor = torch.FloatTensor(X_train)
 y_train_tensor = torch.LongTensor(y_train)
@@ -188,8 +214,18 @@ def evaluate_model(model, data_loader):
     return all_labels, all_preds
 
 # Training function with early stopping
-def train_model(model, train_loader, test_loader, num_epochs, learning_rate, weight_decay, patience=3, verbose=True):
-    criterion = nn.CrossEntropyLoss()
+def train_model(model, train_loader, test_loader, num_epochs, learning_rate, weight_decay, 
+                class_weights=None, patience=3, verbose=True):
+    # Use weighted loss if class weights provided
+    if class_weights is not None:
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        if verbose:
+            print(f"Using weighted loss with capped class weights (max {class_weights.max():.2f}x)")
+    else:
+        criterion = nn.CrossEntropyLoss()
+        if verbose:
+            print(f"Using standard loss (no class weighting)")
+    
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
     best_test_accuracy = 0
@@ -242,7 +278,7 @@ def train_model(model, train_loader, test_loader, num_epochs, learning_rate, wei
 input_size = X_train.shape[1] 
 
 # architecture parameters
-hidden_size = [256, 128]
+hidden_size = [512, 256, 128]
 num_classes = len(np.unique(y_train))
 
 print(f"\nModel parameters:")
@@ -258,7 +294,7 @@ if args.tune:
     
     # Define hyperparameter grid - adjusted for smaller dataset
     learning_rates = [ 0.0005, 0.0001]
-    dropout_rates = [0.4, 0.5]
+    dropout_rates = [0.2, 0.3]  # Lowered from 0.4-0.5 to reduce underfitting
     weight_decays = [0.001, 0.0005, 0.002]  # L2 regularization
     
     results = []
@@ -271,7 +307,8 @@ if args.tune:
         
         model = CellTypeClassifier(input_size, hidden_size, num_classes, dropout_rate=dropout)
         accuracy = train_model(model, train_loader, test_loader, num_epochs=20, 
-                              learning_rate=lr, weight_decay=wd, patience=3, verbose=False)
+                              learning_rate=lr, weight_decay=wd, 
+                              patience=3, verbose=False)
         
         results.append({
             'learning_rate': lr,
@@ -301,7 +338,7 @@ if args.tune:
 else:
     # Default hyperparameters - adjusted for smaller feature set
     learning_rate = 0.0001
-    dropout_rate = 0.5
+    dropout_rate = 0.3  # Lowered from 0.5 to reduce underfitting
     weight_decay = 0.001
     print(f"\nUsing default hyperparameters:")
     print(f"  Learning rate: {learning_rate}")
@@ -314,13 +351,14 @@ model = CellTypeClassifier(input_size, hidden_size, num_classes, dropout_rate=dr
 print(f"\nModel architecture:")
 print(model)
 
-# Training loop with early stopping
+# Training loop with early stopping and class weights
 num_epochs = 20
 patience = 3
 print(f"\nTraining for up to {num_epochs} epochs (early stopping patience: {patience})...")
 
 best_test_accuracy = train_model(model, train_loader, test_loader, num_epochs, 
-                                  learning_rate, weight_decay, patience=patience, verbose=True)
+                                  learning_rate, weight_decay, 
+                                  patience=patience, verbose=True)
 
 # Final evaluation
 all_labels, all_preds = evaluate_model(model, test_loader)
