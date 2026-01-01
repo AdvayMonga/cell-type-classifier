@@ -1,17 +1,3 @@
-"""
-Train neural network for cell type classification.
-
-This refactored version uses the modular architecture to:
-1. Load preprocessed data with unsmoothed expression
-2. Combine gene expression with velocity features
-3. Split into train/test sets
-4. Train neural network with early stopping
-5. Evaluate and save model
-
-Usage:
-    python train_nn_refactored.py --data data/PBMC/pbmc68k_processed_5k.h5ad
-    python train_nn_refactored.py --data data/PBMC/pbmc68k_processed_5k.h5ad --tune
-"""
 import numpy as np
 import os
 import torch
