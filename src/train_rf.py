@@ -65,7 +65,7 @@ print("\nEvaluating best model on test set...")
 model = grid_search.best_estimator_
 y_pred = model.predict(X_test)
 
-#model = RandomForestClassifier(random_state=42, n_jobs=-1, cv=5, n_estimators=200, max_depth=30, min_samples_leaf=2)  # Fixed line
+#model = RandomForestClassifier(random_state=42, n_jobs=-1, cv=5, n_estimators=200, max_depth=30, min_samples_leaf=2)  # Fixed 
 accuracy = accuracy_score(y_test, y_pred)
 print(f"Test accuracy: {accuracy:.1%}")
 

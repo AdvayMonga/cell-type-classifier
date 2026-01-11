@@ -11,3 +11,8 @@ python-igraph
 leidenalg
 torch
 scvelo
+
+# Symbolic regression (optional, for train_nn_with_symbolic.py)
+pysr>=0.16.0
+scipy
+networkx

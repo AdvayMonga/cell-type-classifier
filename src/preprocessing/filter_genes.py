@@ -76,7 +76,7 @@ def get_protected_genes():
 
 
 def filter_low_quality_genes(adata, min_cells=10, remove_mt=True, remove_ribo=True, 
-                              remove_pseudogenes=True, remove_olfactory=True):
+                              remove_pseudogenes=True, remove_olfactory=True, protect=True):
     """
     Remove low-quality genes while protecting critical markers.
     
@@ -93,9 +93,10 @@ def filter_low_quality_genes(adata, min_cells=10, remove_mt=True, remove_ribo=Tr
     """
     print("\nRemoving low-quality genes...")
     
-    protected = get_protected_genes()
-    all_protected = protected['s_phase'] + protected['g2m_phase'] + protected['markers']
-    protected_upper = set([g.upper() for g in all_protected])
+    if(protect):
+        protected = get_protected_genes()
+        all_protected = protected['s_phase'] + protected['g2m_phase'] + protected['markers']
+        protected_upper = set([g.upper() for g in all_protected])
     
     print(f"   Protected gene categories:")
     print(f"     - S-phase cell cycle: {len(protected['s_phase'])} genes")
