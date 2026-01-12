@@ -10,80 +10,7 @@ import itertools
 
 # Import model modules
 from models import CellTypeClassifier, train_model, evaluate_model
-from utils import load_and_validate_data
-
-
-def load_gene_expression_and_features(adata):
-    """
-    Load gene expression (unsmoothed) and velocity features.
-    
-    Args:
-        adata: AnnData object
-    
-    Returns:
-        numpy array: Combined features (genes + velocity)
-    """
-    # CRITICAL: Use unsmoothed data for classification
-    if 'unsmoothed_log' in adata.layers:
-        print(f"\n✓ Using UNSMOOTHED log-transformed data for classification")
-        print(f"  (scVelo moments() smoothed adata.X across neighbors - blurs cell type boundaries)")
-        print(f"  (unsmoothed_log layer preserves sharp boundaries needed for classification)")
-        X_genes = adata.layers['unsmoothed_log']
-    else:
-        print(f"\n⚠ WARNING: Using SMOOTHED data (unsmoothed_log layer not found)")
-        print(f"  This may hurt classification by blurring cell type boundaries!")
-        X_genes = adata.X
-
-    if hasattr(X_genes, 'toarray'):
-        X_genes = X_genes.toarray()
-    else:
-        X_genes = np.array(X_genes)
-
-    print(f"\nGene expression matrix:")
-    print(f"  Shape: {X_genes.shape}")
-    print(f"  Range: [{X_genes.min():.4f}, {X_genes.max():.4f}]")
-    print(f"  Mean: {X_genes.mean():.4f}")
-
-    # Add velocity features
-    print("\nChecking for velocity and statistical features...")
-    velocity_features = []
-    
-    feature_names = [
-        'velocity_pseudotime', 'latent_time', 'velocity_confidence', 'velocity_magnitude',
-        'S_score', 'G2M_score', 'mean_expression', 'expression_variance', 'n_genes_expressed'
-    ]
-    
-    for feat in feature_names:
-        if feat in adata.obs.columns:
-            values = adata.obs[feat].values.reshape(-1, 1)
-            velocity_features.append(values)
-            print(f"  ✓ {feat}: range [{values.min():.4f}, {values.max():.4f}], mean {values.mean():.4f}")
-    
-    # Combine features
-    if velocity_features:
-        velocity_array = np.column_stack(velocity_features)
-        
-        # Check for NaN or Inf values
-        n_nans = np.isnan(velocity_array).sum()
-        n_infs = np.isinf(velocity_array).sum()
-
-        if n_nans > 0 or n_infs > 0:
-            velocity_array = np.nan_to_num(velocity_array, nan=0.0, posinf=0.0, neginf=0.0)
-            print(f"  ⚠ Fixed {n_nans} NaNs and {n_infs} Infs in velocity features")
-        
-        X = np.column_stack([X_genes, velocity_array])
-        n_genes = X_genes.shape[1]
-        n_additional = velocity_array.shape[1]
-        
-        print(f"\n✓ Combined features: {X.shape[1]} total ({n_genes} genes + {n_additional} additional features)")
-        print(f"  Gene expression range: [{X[:, :n_genes].min():.4f}, {X[:, :n_genes].max():.4f}]")
-        print(f"  Velocity features range: [{X[:, n_genes:].min():.4f}, {X[:, n_genes:].max():.4f}]")
-        print(f"  Note: Velocity features already boosted 1.5x during preprocessing")
-    else:
-        print("\n⚠ No velocity features found, using gene expression only")
-        X = X_genes
-    
-    return X
+from utils import load_and_validate_data, load_gene_expression_and_features, add_symbolic_regression_features
 
 
 def main():
@@ -104,9 +31,21 @@ def main():
     print(f"Cell type distribution:")
     print(adata.obs['cell_type'].value_counts())
     
+    # Interactive prompts for feature selection
+    print("\n" + "="*70)
+    use_velocity = input("Include velocity features? (y/n): ").strip().lower() == 'y'
+    use_symbolic = input("Include symbolic regression features? (y/n): ").strip().lower() == 'y'
+    print("="*70)
+    
     # Load features
-    X = load_gene_expression_and_features(adata)
+    X = load_gene_expression_and_features(adata, use_velocity=use_velocity)
     y = adata.obs['cell_type'].values
+    
+    # Add symbolic regression features if requested
+    if use_symbolic:
+        X = add_symbolic_regression_features(adata, X)
+    else:
+        print("\n✓ Skipping symbolic regression")
     
     # Encode labels
     label_encoder = LabelEncoder()

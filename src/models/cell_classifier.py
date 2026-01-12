@@ -25,7 +25,7 @@ class CellTypeClassifier(nn.Module):
         """
         super(CellTypeClassifier, self).__init__()
         
-        # Auto-select architecture if not provided
+        # default architecture based on input size
         if hidden_sizes is None:
             hidden_sizes = self.get_architecture_for_input_size(input_size)
         
@@ -60,8 +60,8 @@ class CellTypeClassifier(nn.Module):
             List of hidden layer sizes
         """
         if input_size > 4000:
-            return [512, 256, 128]  # Large network for 5000+ features
+            return [512, 256, 128]
         elif input_size > 2000:
-            return [256, 128]  # Medium network
+            return [256, 128]
         else:
-            return [128, 64]  # Small network
+            return [128, 64]

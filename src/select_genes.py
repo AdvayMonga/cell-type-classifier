@@ -110,7 +110,7 @@ def main():
     
     n_genes = np.asarray((X_dense > 0).sum(axis=1)).flatten()
     
-    # Normalize to 0-1, then boost by 1.5x (matching velocity_data.py preprocessing)
+    # Normalize to 0-1, then boost by 1.5x (matching prep_data.py preprocessing)
     nge_min = n_genes.min()
     nge_max = n_genes.max()
     nge_range = nge_max - nge_min

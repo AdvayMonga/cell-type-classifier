@@ -16,21 +16,45 @@ cell-type-classifier/
 │   └── pbmc68k_processed_5k.h5ad           # 5k selected genes
 │
 ├── src/
-│   ├── preprocessing/                       # Modular preprocessing
-│   ├── models/                              # Neural network modules
-│   ├── utils/                               # Utility functions
-│   ├── symbolic_regression/                 # Gene relationship discovery (optional)
+│   ├── models/                              # Model architectures
+│   │   ├── cell_classifier.py              # Neural network definition
+│   │   └── training.py                     # Training utilities
 │   │
-│   ├── velocity_data.py                    # Main preprocessing pipeline
-│   ├── select_genes.py                     # Gene selection
-│   ├── train_nn.py                         # Main training script
-│   ├── train_lr.py                         # Logistic regression
-│   ├── train_rf.py                         # Random forest
+│   ├── utils/                               # Utility functions
+│   │   └── data_loading.py                 # Data loading, feature extraction
+│   │
+│   ├── symbolic_regression/                 # Gene relationship discovery (optional)
+│   │   ├── discover_relationships.py       # PySR-based discovery
+│   │   ├── feature_engineering.py          # Regulatory features
+│   │   └── visualization.py                # Network visualization
+│   │
+│   ├── prep_data.py                        # Pipeline Step 1: Preprocessing
+│   ├── select_genes.py                     # Pipeline Step 2: Gene selection
+│   ├── train_nn.py                         # Pipeline Step 3: Training (main)
+│   ├── train_lr.py                         # Alternative: Logistic regression
+│   ├── train_rf.py                         # Alternative: Random forest
 │   └── visualize.py                        # Visualization tools
 │
 ├── models/                                  # Saved model checkpoints
 └── visualizations/                          # Plots and figures
 ```
+
+### Architecture Design
+
+**Pipeline Scripts** (orchestration, run these):
+- `prep_data.py` - Preprocessing with RNA velocity (single self-contained file)
+- `select_genes.py` - Selects informative genes
+- `train_nn.py` - **Main training script** with interactive prompts
+
+**Core Modules** (reusable components):
+- `models/` - Model architectures and training loops
+- `symbolic_regression/` - Optional gene relationship discovery
+
+**Utilities** (helper functions):
+- `utils/data_loading.py` - All data loading and feature extraction functions
+  - `load_and_validate_data()` - Load .h5ad files
+  - `load_gene_expression_and_features()` - Extract genes + velocity features
+  - `add_symbolic_regression_features()` - Add discovered regulatory features
 
 ## Setup & Installation
 
@@ -56,12 +80,15 @@ adata.write('data/PBMC/pbmc68k.h5ad')
 
 ### Step 1: Preprocessing
 ```bash
-# Run full preprocessing (~15 min)
-python src/velocity_data.py
+# Run full preprocessing with RNA velocity (~15 min)
+python src/prep_data.py
 
 # With velocity plots
-python src/velocity_data.py --plot
+python src/prep_data.py --plot
 ```
+
+**Note:** The preprocessing always computes velocity features and saves them.
+You can choose whether to use them during training via interactive prompts.
 
 ### Step 2: Gene Selection
 ```bash
@@ -71,30 +98,22 @@ python src/select_genes.py --data data/PBMC/pbmc68k_processed.h5ad
 
 ### Step 3: Train Classifier
 ```bash
-# Train with default hyperparameters
+# Train with interactive prompts (asks about velocity & symbolic features)
 python src/train_nn.py --data data/PBMC/pbmc68k_processed_5k.h5ad
 
 # Train with hyperparameter tuning
 python src/train_nn.py --data data/PBMC/pbmc68k_processed_5k.h5ad --tune
 ```
 
-### Optional: Symbolic Regression
+**Interactive prompts:**
+- `Include velocity features? (y/n):` - Use RNA velocity features (recommended: y)
+- `Include symbolic regression features? (y/n):` - Discover gene relationships (optional: y/n)
 
-For discovering interpretable gene relationships:
-
+**Note:** Symbolic regression requires additional setup:
 ```bash
-# Install dependencies
 pip install pysr scipy networkx
 python -c "import pysr; pysr.install()"
-
-# Train with symbolic regression features
-python src/train_nn_with_symbolic.py --data data/PBMC/pbmc68k_processed_5k.h5ad --use-symbolic
-
-# Compare baseline vs symbolic
-python src/train_nn_with_symbolic.py --data data/PBMC/pbmc68k_processed_5k.h5ad --compare
 ```
-
-See `src/symbolic_regression/README.md` for details.
 
 ## References
 
