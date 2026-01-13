@@ -12,15 +12,14 @@ This project builds a neural network classifier that predicts cell types (T cell
 cell-type-classifier/
 ├── data/PBMC/
 │   ├── pbmc68k.h5ad                        # Raw data (65,877 cells × 33,939 genes)
-│   ├── pbmc68k_processed.h5ad              # Processed with velocity features
-│   └── pbmc68k_processed_5k.h5ad           # 5k selected genes
+│   ├── pbmc68k_processed.h5ad              # Processed data
 │
 ├── src/
-│   ├── models/                              # Model architectures
+│   ├── models/                             # Model architectures
 │   │   ├── cell_classifier.py              # Neural network definition
 │   │   └── training.py                     # Training utilities
 │   │
-│   ├── utils/                               # Utility functions
+│   ├── utils/                              # Utility functions
 │   │   └── data_loading.py                 # Data loading, feature extraction
 │   │
 │   ├── symbolic_regression/                 # Gene relationship discovery (optional)
@@ -80,7 +79,7 @@ adata.write('data/PBMC/pbmc68k.h5ad')
 
 ### Step 1: Preprocessing
 ```bash
-# Run full preprocessing with RNA velocity (~15 min)
+# Run full preprocessing with RNA velocity (may take time)
 python src/prep_data.py
 
 # With velocity plots
@@ -96,24 +95,30 @@ You can choose whether to use them during training via interactive prompts.
 python src/select_genes.py --data data/PBMC/pbmc68k_processed.h5ad
 ```
 
-### Step 3: Train Classifier
+### Step 3: Train Hierarchical Classifier
 ```bash
-# Train with interactive prompts (asks about velocity & symbolic features)
+# Train hierarchical classifier
 python src/train_nn.py --data data/PBMC/pbmc68k_processed_5k.h5ad
-
-# Train with hyperparameter tuning
-python src/train_nn.py --data data/PBMC/pbmc68k_processed_5k.h5ad --tune
 ```
 
-**Interactive prompts:**
-- `Include velocity features? (y/n):` - Use RNA velocity features (recommended: y)
-- `Include symbolic regression features? (y/n):` - Discover gene relationships (optional: y/n)
+**Hierarchical Classification:**
+- **Level 1**: Coarse classification (T cells vs B cells vs NK vs Myeloid vs Dendritic)
+  - Uses gene expression only
+- **Level 2**: Fine-grained classification within each group
+  - Uses genes + boosted velocity features (2x boost)
+
+**Interactive prompt:**
+- `Include symbolic regression features? (y/n):` - Discover gene relationships (optional)
 
 **Note:** Symbolic regression requires additional setup:
 ```bash
 pip install pysr scipy networkx
 python -c "import pysr; pysr.install()"
 ```
+
+**Output:**
+- `models/hierarchical_level1.pt` - Coarse classifier
+- `models/hierarchical_level2.pt` - Fine-grained classifiers for each group
 
 ## References
 

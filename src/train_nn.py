@@ -1,3 +1,14 @@
+"""
+Hierarchical neural network training for cell type classification.
+
+This script trains a 2-level hierarchical classifier:
+- Level 1: Coarse classification (T cells vs B cells vs NK vs Myeloid vs Dendritic)
+- Level 2: Fine-grained classification within each group (uses boosted velocity features)
+
+Usage:
+    python src/train_nn.py --data data/PBMC/pbmc68k_processed_5k.h5ad
+    python src/train_nn.py --data data/PBMC/pbmc68k_processed_5k.h5ad --tune
+"""
 import numpy as np
 import os
 import torch
@@ -6,195 +17,408 @@ from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, classification_report
-import itertools
 
 # Import model modules
 from models import CellTypeClassifier, train_model, evaluate_model
 from utils import load_and_validate_data, load_gene_expression_and_features, add_symbolic_regression_features
 
 
+# ============================================================================
+# HARDCODED HIERARCHY (for PBMC68k dataset)
+# ============================================================================
+
+CELL_TYPE_HIERARCHY = {
+    'T_cells': [
+        'CD8+ Cytotoxic T',
+        'CD8+/CD45RA+ Naive Cytotoxic',
+        'CD4+/CD45RO+ Memory',
+        'CD4+/CD45RA+/CD25- Naive T',
+        'CD4+/CD25 T Reg',
+        'CD4+ T Helper2',
+    ],
+    'B_cells': [
+        'CD19+ B',
+    ],
+    'NK_cells': [
+        'CD56+ NK',
+    ],
+    'Myeloid': [
+        'CD14+ Monocyte',
+        'CD34+',
+    ],
+    'Dendritic': [
+        'Dendritic',
+    ],
+}
+
+
+def get_coarse_label(fine_label):
+    """Map fine-grained cell type to coarse group."""
+    for coarse, fine_types in CELL_TYPE_HIERARCHY.items():
+        if fine_label in fine_types:
+            return coarse
+    return 'Unknown'
+
+
+def load_velocity_features(adata, boost_factor=2.0):
+    """
+    Load velocity features with additional boosting for Level 2.
+    
+    Args:
+        adata: AnnData object
+        boost_factor: Additional boost multiplier (on top of 1.5x from preprocessing)
+    
+    Returns:
+        numpy array: Velocity features (9 features per cell)
+    """
+    feature_names = [
+        'velocity_pseudotime', 'latent_time', 'velocity_confidence', 'velocity_magnitude',
+        'S_score', 'G2M_score', 'mean_expression', 'expression_variance', 'n_genes_expressed'
+    ]
+    
+    velocity_features = []
+    for feat in feature_names:
+        if feat in adata.obs.columns:
+            values = adata.obs[feat].values.reshape(-1, 1)
+            velocity_features.append(values)
+    
+    if velocity_features:
+        velocity_array = np.column_stack(velocity_features)
+        # Fix any NaN/Inf values
+        velocity_array = np.nan_to_num(velocity_array, nan=0.0, posinf=0.0, neginf=0.0)
+        # Apply additional boost for Level 2 (to overcome gene dominance)
+        velocity_array = velocity_array * boost_factor
+        return velocity_array
+    return None
+
+
+def train_level_model(X_train, y_train, X_test, y_test, level_name, num_epochs=20, verbose=True):
+    """
+    Train a model for one level of the hierarchy.
+    
+    Returns:
+        tuple: (model, label_encoder, accuracy, (test_labels, test_preds))
+    """
+    # Encode labels
+    label_encoder = LabelEncoder()
+    y_train_encoded = label_encoder.fit_transform(y_train)
+    y_test_encoded = label_encoder.transform(y_test)
+    
+    # Create data loaders
+    train_dataset = TensorDataset(
+        torch.FloatTensor(X_train),
+        torch.LongTensor(y_train_encoded)
+    )
+    test_dataset = TensorDataset(
+        torch.FloatTensor(X_test),
+        torch.LongTensor(y_test_encoded)
+    )
+    
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    
+    # Model parameters
+    input_size = X_train.shape[1]
+    num_classes = len(label_encoder.classes_)
+    hidden_sizes = CellTypeClassifier.get_architecture_for_input_size(input_size)
+    
+    if verbose:
+        print(f"\n  Model: {input_size} inputs → {hidden_sizes} → {num_classes} classes")
+    
+    # Train model
+    model = CellTypeClassifier(input_size, num_classes, hidden_sizes, dropout_rate=0.3)
+    best_accuracy = train_model(
+        model, train_loader, test_loader,
+        num_epochs=num_epochs,
+        learning_rate=0.0001,
+        weight_decay=0.001,
+        patience=5,
+        verbose=verbose
+    )
+    
+    # Final evaluation
+    test_labels, test_preds = evaluate_model(model, test_loader)
+    accuracy = accuracy_score(test_labels, test_preds)
+    
+    return model, label_encoder, accuracy, (test_labels, test_preds)
+
+
 def main():
     # Parse arguments
-    parser = argparse.ArgumentParser(description='Train neural network for cell type classification')
+    parser = argparse.ArgumentParser(description='Train hierarchical neural network for cell type classification')
     parser.add_argument('--data', type=str, required=True, help='Path to processed .h5ad file')
-    parser.add_argument('--tune', action='store_true', help='Enable hyperparameter tuning')
+    parser.add_argument('--tune', action='store_true', help='Enable hyperparameter tuning (not yet implemented for hierarchical)')
     args = parser.parse_args()
 
     # Setup paths
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     data_path = os.path.join(PROJECT_ROOT, args.data) if not os.path.isabs(args.data) else args.data
+    MODELS_DIR = os.path.join(PROJECT_ROOT, 'models')
+    os.makedirs(MODELS_DIR, exist_ok=True)
     
     # Load and validate data
     adata = load_and_validate_data(data_path)
     
-    print(f"Cell types: {adata.obs['cell_type'].nunique()}")
+    print(f"\nCell types found: {adata.obs['cell_type'].nunique()}")
     print(f"Cell type distribution:")
     print(adata.obs['cell_type'].value_counts())
     
-    # Interactive prompts for feature selection
+    # Single prompt for symbolic regression
     print("\n" + "="*70)
-    use_velocity = input("Include velocity features? (y/n): ").strip().lower() == 'y'
     use_symbolic = input("Include symbolic regression features? (y/n): ").strip().lower() == 'y'
     print("="*70)
     
-    # Load features
-    X = load_gene_expression_and_features(adata, use_velocity=use_velocity)
-    y = adata.obs['cell_type'].values
+    # Load gene expression (unsmoothed, no velocity for Level 1)
+    print("\n" + "="*70)
+    print("LOADING FEATURES")
+    print("="*70)
+    X_genes = load_gene_expression_and_features(adata, use_velocity=False)
     
-    # Add symbolic regression features if requested
-    if use_symbolic:
-        X = add_symbolic_regression_features(adata, X)
+    # Load velocity features separately (for Level 2 boosting)
+    X_velocity = load_velocity_features(adata, boost_factor=2.0)
+    if X_velocity is not None:
+        print(f"\n✓ Loaded velocity features for Level 2")
+        print(f"  Shape: {X_velocity.shape}")
+        print(f"  Range: [{X_velocity.min():.4f}, {X_velocity.max():.4f}] (boosted 2x for Level 2)")
     else:
-        print("\n✓ Skipping symbolic regression")
+        print(f"\n⚠ No velocity features found")
     
-    # Encode labels
-    label_encoder = LabelEncoder()
-    y_encoded = label_encoder.fit_transform(y)
+    # Load symbolic features if requested
+    X_symbolic = None
+    if use_symbolic:
+        # Create combined features temporarily for symbolic regression
+        X_temp = load_gene_expression_and_features(adata, use_velocity=True)
+        X_combined = add_symbolic_regression_features(adata, X_temp)
+        # Extract just the symbolic features (last columns)
+        n_symbolic = X_combined.shape[1] - X_temp.shape[1]
+        if n_symbolic > 0:
+            X_symbolic = X_combined[:, -n_symbolic:]
+            print(f"\n✓ Loaded {n_symbolic} symbolic regression features")
+    else:
+        print(f"\n✓ Skipping symbolic regression features")
     
-    # Train/test split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded
+    # Get labels
+    y_fine = adata.obs['cell_type'].values
+    y_coarse = np.array([get_coarse_label(ct) for ct in y_fine])
+    
+    # Check for unknown cell types
+    unknown_mask = y_coarse == 'Unknown'
+    if unknown_mask.sum() > 0:
+        print(f"\n⚠ Warning: {unknown_mask.sum()} cells have unknown cell types:")
+        unknown_types = set(y_fine[unknown_mask])
+        for ut in unknown_types:
+            print(f"    - '{ut}'")
+        print(f"  These will be excluded from training")
+        
+        # Filter out unknown cells
+        X_genes = X_genes[~unknown_mask]
+        if X_velocity is not None:
+            X_velocity = X_velocity[~unknown_mask]
+        if X_symbolic is not None:
+            X_symbolic = X_symbolic[~unknown_mask]
+        y_fine = y_fine[~unknown_mask]
+        y_coarse = y_coarse[~unknown_mask]
+    
+    # Train/test split (stratified by fine-grained labels)
+    indices = np.arange(len(y_fine))
+    train_idx, test_idx = train_test_split(
+        indices, test_size=0.2, random_state=42, stratify=y_fine
     )
     
-    print(f"\nTraining set: {X_train.shape[0]} cells")
-    print(f"Test set: {X_test.shape[0]} cells")
-    
-    # Print class distribution
     print(f"\n{'='*70}")
-    print(f"CLASS DISTRIBUTION")
+    print(f"DATASET SPLIT")
     print(f"{'='*70}")
-    for i, label in enumerate(label_encoder.classes_):
-        n_train = (y_train == i).sum()
-        n_test = (y_test == i).sum()
-        print(f"{label:35s}: {n_train:5d} train, {n_test:4d} test")
-    print(f"{'='*70}\n")
+    print(f"Training set: {len(train_idx)} cells")
+    print(f"Test set: {len(test_idx)} cells")
     
-    # Create data loaders
-    X_train_tensor = torch.FloatTensor(X_train)
-    y_train_tensor = torch.LongTensor(y_train)
-    X_test_tensor = torch.FloatTensor(X_test)
-    y_test_tensor = torch.LongTensor(y_test)
-    
-    train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    
-    test_dataset = TensorDataset(X_test_tensor, y_test_tensor)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-    
-    # Model parameters
-    input_size = X_train.shape[1]
-    num_classes = len(np.unique(y_train))
-    hidden_sizes = CellTypeClassifier.get_architecture_for_input_size(input_size)
-    
-    print(f"Model parameters:")
-    print(f"  Input size: {input_size}")
-    print(f"  Hidden layers: {hidden_sizes}")
-    print(f"  Output classes: {num_classes}")
-    
-    # Hyperparameter tuning or default
-    if args.tune:
-        print("\n" + "="*70)
-        print("HYPERPARAMETER GRID SEARCH")
-        print("="*70)
-        
-        learning_rates = [0.0005, 0.0001]
-        dropout_rates = [0.2, 0.3]
-        weight_decays = [0.001, 0.0005, 0.002]
-        
-        results = []
-        total_configs = len(learning_rates) * len(dropout_rates) * len(weight_decays)
-        current_config = 0
-        
-        for lr, dropout, wd in itertools.product(learning_rates, dropout_rates, weight_decays):
-            current_config += 1
-            print(f"\n[{current_config}/{total_configs}] LR: {lr}, Dropout: {dropout}, L2: {wd}")
-            
-            model = CellTypeClassifier(input_size, num_classes, hidden_sizes, dropout_rate=dropout)
-            accuracy = train_model(model, train_loader, test_loader, num_epochs=20, 
-                                  learning_rate=lr, weight_decay=wd, patience=3, verbose=False)
-            
-            results.append({
-                'learning_rate': lr,
-                'dropout': dropout,
-                'weight_decay': wd,
-                'accuracy': accuracy
-            })
-            
-            print(f"  Best Test Accuracy: {accuracy:.1%}")
-        
-        # Find best configuration
-        best_config = max(results, key=lambda x: x['accuracy'])
-        print("\n" + "="*70)
-        print("BEST HYPERPARAMETERS:")
-        print("="*70)
-        print(f"Learning rate: {best_config['learning_rate']}")
-        print(f"Dropout rate: {best_config['dropout']}")
-        print(f"L2 Regularization: {best_config['weight_decay']}")
-        print(f"Best Test Accuracy: {best_config['accuracy']:.1%}")
-        print("="*70)
-        
-        learning_rate = best_config['learning_rate']
-        dropout_rate = best_config['dropout']
-        weight_decay = best_config['weight_decay']
-    else:
-        learning_rate = 0.0001
-        dropout_rate = 0.3
-        weight_decay = 0.001
-        print(f"\nUsing default hyperparameters:")
-        print(f"  Learning rate: {learning_rate}")
-        print(f"  Dropout rate: {dropout_rate}")
-        print(f"  L2 Regularization: {weight_decay}")
-    
-    # Train final model
-    print(f"\nTraining final model...")
-    model = CellTypeClassifier(input_size, num_classes, hidden_sizes, dropout_rate=dropout_rate)
-    print(f"\nModel architecture:")
-    print(model)
-    
-    num_epochs = 20
-    patience = 3
-    print(f"\nTraining for up to {num_epochs} epochs (early stopping patience: {patience})...")
-    
-    best_test_accuracy = train_model(model, train_loader, test_loader, num_epochs, 
-                                      learning_rate, weight_decay, patience=patience, verbose=True)
-    
-    # Final evaluation
-    all_labels, all_preds = evaluate_model(model, test_loader)
-    train_labels, train_preds = evaluate_model(model, train_loader)
-    
-    accuracy = accuracy_score(all_labels, all_preds)
-    train_accuracy = accuracy_score(train_labels, train_preds)
-    
+    # ========================================================================
+    # LEVEL 1: COARSE CLASSIFICATION (Genes only)
+    # ========================================================================
     print(f"\n{'='*70}")
-    print(f"FINAL RESULTS:")
+    print(f"LEVEL 1: COARSE CLASSIFICATION")
     print(f"{'='*70}")
-    print(f"Train accuracy: {train_accuracy:.1%}")
-    print(f"Test accuracy: {accuracy:.1%}")
-    print(f"Overfitting gap: {train_accuracy - accuracy:.1%} ({'Good' if train_accuracy - accuracy < 0.15 else 'Overfitting'})")
+    print(f"Classes: {list(CELL_TYPE_HIERARCHY.keys())}")
+    print(f"Features: Gene expression only ({X_genes.shape[1]} genes)")
+    
+    X_level1 = X_genes
+    
+    model_level1, encoder_level1, acc_level1, (l1_labels, l1_preds) = train_level_model(
+        X_level1[train_idx], y_coarse[train_idx],
+        X_level1[test_idx], y_coarse[test_idx],
+        level_name="Level 1",
+        num_epochs=20,
+        verbose=True
+    )
+    
+    print(f"\n✓ Level 1 Accuracy: {acc_level1:.1%}")
+    print(f"\nLevel 1 Classification Report:")
+    print(classification_report(l1_labels, l1_preds, target_names=encoder_level1.classes_))
+    
+    # ========================================================================
+    # LEVEL 2: FINE-GRAINED CLASSIFICATION (Genes + Boosted Velocity)
+    # ========================================================================
+    print(f"\n{'='*70}")
+    print(f"LEVEL 2: FINE-GRAINED CLASSIFICATION")
     print(f"{'='*70}")
     
-    print("\nPer-class performance:")
-    print(classification_report(all_labels, all_preds, target_names=label_encoder.classes_))
+    # Prepare Level 2 features (genes + boosted velocity + optional symbolic)
+    X_level2_base = X_genes.copy()
+    feature_info = [f"{X_genes.shape[1]} genes"]
     
-    # Save model
-    MODELS_DIR = os.path.join(PROJECT_ROOT, 'models')
-    os.makedirs(MODELS_DIR, exist_ok=True)
+    if X_velocity is not None:
+        X_level2_base = np.column_stack([X_level2_base, X_velocity])
+        feature_info.append(f"{X_velocity.shape[1]} velocity (boosted 2x)")
     
-    model_data = {
-        'model_state_dict': model.state_dict(),
-        'label_encoder': label_encoder,
-        'input_size': input_size,
-        'hidden_sizes': hidden_sizes,
-        'num_classes': num_classes,
-        'accuracy': accuracy,
-        'learning_rate': learning_rate,
-        'dropout_rate': dropout_rate,
-        'weight_decay': weight_decay
+    if X_symbolic is not None:
+        X_level2_base = np.column_stack([X_level2_base, X_symbolic])
+        feature_info.append(f"{X_symbolic.shape[1]} symbolic")
+    
+    print(f"Features: {' + '.join(feature_info)}")
+    print(f"Total Level 2 features: {X_level2_base.shape[1]}")
+    
+    # Train a model for each coarse group with >1 subtype
+    level2_models = {}
+    level2_encoders = {}
+    level2_accuracies = {}
+    
+    for group_name, subtypes in CELL_TYPE_HIERARCHY.items():
+        if len(subtypes) <= 1:
+            print(f"\n  Skipping {group_name} (only 1 subtype: {subtypes[0]})")
+            continue
+        
+        print(f"\n  {'─'*60}")
+        print(f"  Training Level 2 model for: {group_name}")
+        print(f"  {'─'*60}")
+        print(f"  Subtypes: {subtypes}")
+        
+        # Get cells from this group
+        group_mask_train = np.isin(y_fine[train_idx], subtypes)
+        group_mask_test = np.isin(y_fine[test_idx], subtypes)
+        
+        n_train = group_mask_train.sum()
+        n_test = group_mask_test.sum()
+        
+        if n_train < 50 or n_test < 10:
+            print(f"  ⚠ Skipping {group_name}: insufficient samples (train={n_train}, test={n_test})")
+            continue
+        
+        print(f"  Samples: {n_train} train, {n_test} test")
+        
+        # Extract group data
+        X_group_train = X_level2_base[train_idx][group_mask_train]
+        y_group_train = y_fine[train_idx][group_mask_train]
+        X_group_test = X_level2_base[test_idx][group_mask_test]
+        y_group_test = y_fine[test_idx][group_mask_test]
+        
+        # Train model for this group
+        model, encoder, accuracy, (labels, preds) = train_level_model(
+            X_group_train, y_group_train,
+            X_group_test, y_group_test,
+            level_name=f"Level 2 ({group_name})",
+            num_epochs=25,
+            verbose=True
+        )
+        
+        level2_models[group_name] = model
+        level2_encoders[group_name] = encoder
+        level2_accuracies[group_name] = accuracy
+        
+        print(f"\n  ✓ {group_name} Accuracy: {accuracy:.1%}")
+        print(f"\n  Classification Report for {group_name}:")
+        print(classification_report(labels, preds, target_names=encoder.classes_))
+    
+    # ========================================================================
+    # OVERALL HIERARCHICAL ACCURACY
+    # ========================================================================
+    print(f"\n{'='*70}")
+    print(f"HIERARCHICAL CLASSIFICATION RESULTS")
+    print(f"{'='*70}")
+    
+    # Compute overall accuracy using hierarchical prediction
+    correct = 0
+    total = len(test_idx)
+    
+    # For each test sample
+    for i, idx in enumerate(test_idx):
+        true_fine = y_fine[idx]
+        true_coarse = y_coarse[idx]
+        
+        # Level 1 prediction
+        with torch.no_grad():
+            model_level1.eval()
+            x_l1 = torch.FloatTensor(X_level1[idx:idx+1])
+            pred_coarse_idx = model_level1(x_l1).argmax(dim=1).item()
+            pred_coarse = encoder_level1.classes_[pred_coarse_idx]
+        
+        # If Level 1 is wrong, overall is wrong
+        if pred_coarse != true_coarse:
+            continue
+        
+        # If Level 1 is correct, check Level 2
+        if pred_coarse in level2_models:
+            # Use Level 2 model
+            with torch.no_grad():
+                model_l2 = level2_models[pred_coarse]
+                encoder_l2 = level2_encoders[pred_coarse]
+                model_l2.eval()
+                x_l2 = torch.FloatTensor(X_level2_base[idx:idx+1])
+                pred_fine_idx = model_l2(x_l2).argmax(dim=1).item()
+                pred_fine = encoder_l2.classes_[pred_fine_idx]
+            
+            if pred_fine == true_fine:
+                correct += 1
+        else:
+            # Single-class group (B cells, NK, Dendritic)
+            # If Level 1 is correct, the answer is automatically correct
+            correct += 1
+    
+    overall_accuracy = correct / total
+    
+    # Print summary
+    print(f"\nPER-LEVEL ACCURACY:")
+    print(f"  Level 1 (Coarse): {acc_level1:.1%}")
+    for group_name, acc in level2_accuracies.items():
+        print(f"  Level 2 ({group_name}): {acc:.1%}")
+    
+    print(f"\n" + "="*70)
+    print(f"OVERALL HIERARCHICAL ACCURACY: {overall_accuracy:.1%}")
+    print(f"="*70)
+    
+    # ========================================================================
+    # SAVE MODELS
+    # ========================================================================
+    print(f"\nSaving models...")
+    
+    # Save Level 1 model
+    level1_data = {
+        'model_state_dict': model_level1.state_dict(),
+        'label_encoder': encoder_level1,
+        'input_size': X_level1.shape[1],
+        'hidden_sizes': CellTypeClassifier.get_architecture_for_input_size(X_level1.shape[1]),
+        'num_classes': len(encoder_level1.classes_),
+        'accuracy': acc_level1,
+    }
+    torch.save(level1_data, os.path.join(MODELS_DIR, 'hierarchical_level1.pt'))
+    print(f"  ✓ Saved Level 1 model to models/hierarchical_level1.pt")
+    
+    # Save Level 2 models
+    level2_data = {
+        'models': {},
+        'encoders': level2_encoders,
+        'accuracies': level2_accuracies,
+        'input_size': X_level2_base.shape[1],
+        'hierarchy': CELL_TYPE_HIERARCHY,
     }
     
-    model_path = os.path.join(MODELS_DIR, 'neural_network.pt')
-    torch.save(model_data, model_path)
-    print(f"\nModel saved to {model_path}")
+    for group_name, model in level2_models.items():
+        level2_data['models'][group_name] = model.state_dict()
+    
+    torch.save(level2_data, os.path.join(MODELS_DIR, 'hierarchical_level2.pt'))
+    print(f"  ✓ Saved Level 2 models to models/hierarchical_level2.pt")
+    
+    print(f"\n{'='*70}")
+    print(f"TRAINING COMPLETE")
+    print(f"{'='*70}")
 
 
 if __name__ == '__main__':
