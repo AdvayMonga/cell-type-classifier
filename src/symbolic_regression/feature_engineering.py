@@ -75,8 +75,14 @@ def compute_regulatory_features(
         print(f"  Computing {len(ct_models)} regulatory scores...")
         
         for target_gene, model in ct_models.items():
-            # Get predictor genes from model
-            predictor_genes = model.feature_names_in_
+            # Get predictor genes from model - try different attribute names for compatibility
+            if hasattr(model, 'feature_names_in_'):
+                predictor_genes = model.feature_names_in_
+            elif hasattr(model, 'variable_names'):
+                predictor_genes = model.variable_names
+            else:
+                print(f"    ⚠ Cannot find feature names for {target_gene}, skipping")
+                continue
             
             # Get expression data for all cells
             X = expr_df[predictor_genes].values

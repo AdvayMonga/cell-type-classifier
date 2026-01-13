@@ -17,6 +17,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, classification_report
+from imblearn.over_sampling import SMOTE
 
 # Import model modules
 from models import CellTypeClassifier, train_model, evaluate_model
@@ -92,13 +93,56 @@ def load_velocity_features(adata, boost_factor=2.0):
     return None
 
 
-def train_level_model(X_train, y_train, X_test, y_test, level_name, num_epochs=20, verbose=True):
+def train_level_model(X_train, y_train, X_test, y_test, level_name, num_epochs=20, verbose=True, use_smote=False):
     """
     Train a model for one level of the hierarchy.
+    
+    Args:
+        use_smote: If True, apply SMOTE to oversample minority classes
     
     Returns:
         tuple: (model, label_encoder, accuracy, (test_labels, test_preds))
     """
+    # Apply SMOTE if requested (before encoding labels)
+    if use_smote:
+        # Check class distribution
+        unique, counts = np.unique(y_train, return_counts=True)
+        class_counts = dict(zip(unique, counts))
+        min_samples = counts.min()
+        
+        if verbose:
+            print(f"\n  Class distribution before SMOTE:")
+            for cls, cnt in sorted(class_counts.items(), key=lambda x: -x[1]):
+                print(f"    {cls}: {cnt}")
+        
+        # SMOTE needs at least k_neighbors + 1 samples (default k=5)
+        if min_samples >= 6:
+            # Only oversample classes with < 500 samples to target of 500
+            # This avoids creating too many synthetic samples
+            target_min = 500
+            sampling_strategy = {}
+            
+            for cls, cnt in class_counts.items():
+                if cnt < target_min:
+                    sampling_strategy[cls] = target_min
+                    if verbose:
+                        print(f"    → Will oversample '{cls}': {cnt} → {target_min}")
+            
+            if sampling_strategy:
+                smote = SMOTE(random_state=42, sampling_strategy=sampling_strategy)
+                X_train, y_train = smote.fit_resample(X_train, y_train)
+                if verbose:
+                    print(f"\n  Applied targeted SMOTE:")
+                    new_unique, new_counts = np.unique(y_train, return_counts=True)
+                    for cls, cnt in zip(new_unique, new_counts):
+                        print(f"    {cls}: {cnt}")
+            else:
+                if verbose:
+                    print(f"\n  ✓ No classes need SMOTE (all have ≥{target_min} samples)")
+        else:
+            if verbose:
+                print(f"\n  ⚠ Skipping SMOTE: min class has only {min_samples} samples (need ≥6)")
+    
     # Encode labels
     label_encoder = LabelEncoder()
     y_train_encoded = label_encoder.fit_transform(y_train)
@@ -310,13 +354,15 @@ def main():
         X_group_test = X_level2_base[test_idx][group_mask_test]
         y_group_test = y_fine[test_idx][group_mask_test]
         
-        # Train model for this group
+        # Train model for this group (use SMOTE for T_cells to handle imbalance)
+        use_smote = (group_name == 'T_cells')
         model, encoder, accuracy, (labels, preds) = train_level_model(
             X_group_train, y_group_train,
             X_group_test, y_group_test,
             level_name=f"Level 2 ({group_name})",
             num_epochs=25,
-            verbose=True
+            verbose=True,
+            use_smote=use_smote
         )
         
         level2_models[group_name] = model

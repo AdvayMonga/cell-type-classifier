@@ -127,8 +127,14 @@ def plot_equation_fits(
     # Filter to cell type
     ct_data = expr_df[expr_df['cell_type'] == cell_type]
     
-    # Get predictions
-    predictor_genes = model.feature_names_in_
+    # Get predictions - try different attribute names for compatibility
+    if hasattr(model, 'feature_names_in_'):
+        predictor_genes = model.feature_names_in_
+    elif hasattr(model, 'variable_names'):
+        predictor_genes = model.variable_names
+    else:
+        raise AttributeError("Cannot find feature names in model")
+    
     X = ct_data[predictor_genes].values
     y_actual = ct_data[target_gene].values
     y_pred = model.predict(X)
@@ -222,7 +228,13 @@ def visualize_regulatory_network(
     
     # Add edges: predictor genes -> target gene
     for target_gene, model in ct_models.items():
-        predictor_genes = model.feature_names_in_
+        # Get feature names - try different attribute names for compatibility
+        if hasattr(model, 'feature_names_in_'):
+            predictor_genes = model.feature_names_in_
+        elif hasattr(model, 'variable_names'):
+            predictor_genes = model.variable_names
+        else:
+            continue  # Skip if can't find feature names
         
         # Add nodes
         G.add_node(target_gene)

@@ -148,7 +148,6 @@ def fit_symbolic_models(
         'parsimony': 0.01,  # Penalty for complexity (smaller = simpler equations)
         'model_selection': 'best',  # or 'accuracy' for most accurate
         'loss': 'loss(prediction, target) = abs(prediction - target)',  # L1 loss
-        'feature_names_in': feature_names,
         'random_state': 42,
         'verbosity': 0,  # Reduce console output
         'procs': 4,  # Parallel processes (adjust based on your CPU)
@@ -163,7 +162,8 @@ def fit_symbolic_models(
     model = PySRRegressor(**params)
     
     try:
-        model.fit(X, y)
+        # Pass feature_names to fit() as variable_names
+        model.fit(X, y, variable_names=feature_names)
         
         # Get best equation
         best_eq = model.get_best()
