@@ -147,11 +147,13 @@ def fit_symbolic_models(
         'timeout_in_seconds': 300,  # 5 minute timeout per model
         'parsimony': 0.01,  # Penalty for complexity (smaller = simpler equations)
         'model_selection': 'best',  # or 'accuracy' for most accurate
-        'loss': 'loss(prediction, target) = abs(prediction - target)',  # L1 loss
+        'elementwise_loss': 'loss(prediction, target) = abs(prediction - target)',  # L1 loss (renamed from 'loss')
+        'deterministic': True,  # For reproducibility with random_state
         'random_state': 42,
         'verbosity': 0,  # Reduce console output
-        'procs': 4,  # Parallel processes (adjust based on your CPU)
-        'multithreading': True,
+        'parallelism': 'serial',  # For deterministic results (was 'multithreading')
+        'batching': True,  # Enable batching for large datasets (>10k samples)
+        'batch_size': 500,  # Batch size for faster processing
     }
     
     # Override defaults with user-provided parameters

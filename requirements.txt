@@ -12,6 +12,7 @@ leidenalg
 torch
 scvelo
 imbalanced-learn
+xgboost
 
 # Symbolic regression (optional, for train_nn_with_symbolic.py)
 pysr>=0.16.0

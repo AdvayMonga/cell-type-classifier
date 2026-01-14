@@ -36,3 +36,4 @@ figures/*.svg
 src/data/PBMC/pbmc68k.h5ad
 
 notes.txt
+outputs/
