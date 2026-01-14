@@ -2,10 +2,11 @@
 Hierarchical classifier with XGBoost for Level 2 (fine-grained classification).
 
 This script trains a 2-level hierarchical classifier:
-- Level 1: Neural network for coarse classification (T cells vs B cells vs NK vs Myeloid vs Dendritic)
+- Level 1: Neural network for coarse classification (automatically detected from data)
 - Level 2: XGBoost for fine-grained classification (better with imbalanced classes)
 
 XGBoost is used for Level 2 because it handles class imbalance better than neural networks.
+The hierarchy is automatically detected by clustering similar cell types together.
 
 Usage:
     python src/train_xgb.py --data data/PBMC/pbmc68k_processed_5k.h5ad
@@ -29,40 +30,12 @@ from sklearn.metrics import accuracy_score, classification_report
 # Import model modules
 from models import CellTypeClassifier, train_model, evaluate_model
 from utils import load_and_validate_data, load_gene_expression_and_features, add_symbolic_regression_features
+from utils import get_hierarchy_for_classifier
 
 
-# ============================================================================
-# HARDCODED HIERARCHY (for PBMC68k dataset)
-# ============================================================================
-
-CELL_TYPE_HIERARCHY = {
-    'T_cells': [
-        'CD8+ Cytotoxic T',
-        'CD8+/CD45RA+ Naive Cytotoxic',
-        'CD4+/CD45RO+ Memory',
-        'CD4+/CD45RA+/CD25- Naive T',
-        'CD4+/CD25 T Reg',
-        'CD4+ T Helper2',
-    ],
-    'B_cells': [
-        'CD19+ B',
-    ],
-    'NK_cells': [
-        'CD56+ NK',
-    ],
-    'Myeloid': [
-        'CD14+ Monocyte',
-        'CD34+',
-    ],
-    'Dendritic': [
-        'Dendritic',
-    ],
-}
-
-
-def get_coarse_label(fine_label):
+def get_coarse_label(fine_label, hierarchy):
     """Map fine-grained cell type to coarse group."""
-    for coarse, fine_types in CELL_TYPE_HIERARCHY.items():
+    for coarse, fine_types in hierarchy.items():
         if fine_label in fine_types:
             return coarse
     return 'Unknown'
@@ -225,6 +198,16 @@ def main():
     print(f"Cell type distribution:")
     print(adata.obs['cell_type'].value_counts())
     
+    # Auto-detect hierarchy from data
+    print("\n" + "="*70)
+    print("AUTO-DETECTING HIERARCHY")
+    print("="*70)
+    CELL_TYPE_HIERARCHY = get_hierarchy_for_classifier(
+        adata, 
+        n_groups=None,  # Auto-determine optimal number of groups
+        verbose=True
+    )
+    
     # Single prompt for symbolic regression
     print("\n" + "="*70)
     use_symbolic = input("Include symbolic regression features? (y/n): ").strip().lower() == 'y'
@@ -256,7 +239,7 @@ def main():
     
     # Get labels
     y_fine = adata.obs['cell_type'].values
-    y_coarse = np.array([get_coarse_label(ct) for ct in y_fine])
+    y_coarse = np.array([get_coarse_label(ct, CELL_TYPE_HIERARCHY) for ct in y_fine])
     
     # Filter unknown cell types
     unknown_mask = y_coarse == 'Unknown'
