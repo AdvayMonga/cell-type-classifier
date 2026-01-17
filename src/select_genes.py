@@ -42,56 +42,23 @@ def main():
     adata = anndata.io.read_h5ad(input_path)
     initial_genes = adata.shape[1]
     print(f"Input shape: {adata.shape[0]} cells x {initial_genes} genes")
-    
-    # Critical markers from Zheng et al. 2017 - FORCE include these
-    FORCE_INCLUDE_MARKERS = [
-        # T cell markers
-        'CD3D', 'CD3E', 'CD3G', 'CD4', 'CD8A', 'CD8B', 'IL7R', 'CCR7',
-        # B cell markers  
-        'CD19', 'MS4A1', 'CD79A', 'CD79B',
-        # NK cell markers
-        'NCAM1', 'NKG7', 'GNLY', 'KLRD1',
-        # Monocyte markers
-        'CD14', 'FCGR3A', 'S100A8', 'S100A9', 'LYZ',
-        # DC markers
-        'FCER1A', 'CD1C',
-        # Stem cell
-        'CD34',
-        # Pan-leukocyte
-        'PTPRC'
-    ]
-    
+
     print(f"\n{'='*70}")
-    print(f"GENE SELECTION WITH FORCED MARKER INCLUSION")
+    print(f"GENE SELECTION (ATTENTION-BASED)")
     print(f"{'='*70}")
-    
-    # Check which markers exist in the dataset
-    existing_markers = [m for m in FORCE_INCLUDE_MARKERS if m in adata.var_names]
-    missing_markers = [m for m in FORCE_INCLUDE_MARKERS if m not in adata.var_names]
-    
-    print(f"  Critical markers from Zheng 2017:")
-    print(f"    Found: {len(existing_markers)}/{len(FORCE_INCLUDE_MARKERS)}")
-    if missing_markers:
-        print(f"    Missing: {', '.join(missing_markers)}")
-    
-    # Select highly variable genes (don't subset yet)
+    print(f"  Note: Using attention mechanism in neural network to learn gene importance")
+    print(f"  No manual marker forcing - model will learn which genes matter")
+
+    # Select highly variable genes
     print(f"\n  Selecting top {N_GENES} highly variable genes...")
     sc.pp.highly_variable_genes(adata, n_top_genes=N_GENES, subset=False)
-    
-    # FORCE include critical markers
-    for marker in existing_markers:
-        adata.var.loc[marker, 'highly_variable'] = True
-    
-    # Now subset to highly variable
+
+    # Subset to highly variable genes only
     adata = adata[:, adata.var['highly_variable']].copy()
-    
+
     final_genes = adata.shape[1]
-    n_forced = len(existing_markers)
-    n_selected = final_genes - n_forced
-    
-    print(f"\n  ✓ Final gene set: {final_genes} genes")
-    print(f"    - {n_forced} forced markers (cell surface proteins)")
-    print(f"    - {n_selected} highly variable genes")
+
+    print(f"\n  ✓ Final gene set: {final_genes} highly variable genes")
     print(f"  Genes removed: {initial_genes - final_genes}")
     
     # Verify unsmoothed layer is preserved
