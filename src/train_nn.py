@@ -29,6 +29,7 @@ from imblearn.over_sampling import SMOTE
 
 # Import model modules
 from models import CellTypeClassifier, train_model, evaluate_model
+from models import tune_architecture, create_model_from_params, get_training_params_from_study
 from utils import load_and_validate_data, load_gene_expression_and_features, add_symbolic_regression_features
 from utils import get_hierarchy_for_classifier
 
@@ -73,15 +74,25 @@ def load_velocity_features(adata, boost_factor=2.0):
     return None
 
 
-def train_level_model(X_train, y_train, X_test, y_test, level_name, num_epochs=20, verbose=True, use_smote=False):
+def train_level_model(X_train, y_train, X_test, y_test, level_name, num_epochs=20, verbose=True,
+                      use_smote=False, tune=False, n_trials=30):
     """
     Train a model for one level of the hierarchy.
-    
+
     Args:
+        X_train: Training features
+        y_train: Training labels (strings)
+        X_test: Test features
+        y_test: Test labels (strings)
+        level_name: Name for logging
+        num_epochs: Max epochs for training
+        verbose: Print progress
         use_smote: If True, apply SMOTE to oversample minority classes
-    
+        tune: If True, use Optuna to find best architecture
+        n_trials: Number of Optuna trials if tuning
+
     Returns:
-        tuple: (model, label_encoder, accuracy, (test_labels, test_preds))
+        tuple: (model, label_encoder, accuracy, (test_labels, test_preds), best_params)
     """
     # Apply SMOTE if requested (before encoding labels)
     if use_smote:
@@ -89,25 +100,25 @@ def train_level_model(X_train, y_train, X_test, y_test, level_name, num_epochs=2
         unique, counts = np.unique(y_train, return_counts=True)
         class_counts = dict(zip(unique, counts))
         min_samples = counts.min()
-        
+
         if verbose:
             print(f"\n  Class distribution before SMOTE:")
             for cls, cnt in sorted(class_counts.items(), key=lambda x: -x[1]):
                 print(f"    {cls}: {cnt}")
-        
+
         # SMOTE needs at least k_neighbors + 1 samples (default k=5)
         if min_samples >= 6:
             # Only oversample classes with < 500 samples to target of 500
             # This avoids creating too many synthetic samples
             target_min = 500
             sampling_strategy = {}
-            
+
             for cls, cnt in class_counts.items():
                 if cnt < target_min:
                     sampling_strategy[cls] = target_min
                     if verbose:
                         print(f"    → Will oversample '{cls}': {cnt} → {target_min}")
-            
+
             if sampling_strategy:
                 smote = SMOTE(random_state=42, sampling_strategy=sampling_strategy)
                 X_train, y_train = smote.fit_resample(X_train, y_train)
@@ -122,12 +133,55 @@ def train_level_model(X_train, y_train, X_test, y_test, level_name, num_epochs=2
         else:
             if verbose:
                 print(f"\n  ⚠ Skipping SMOTE: min class has only {min_samples} samples (need ≥6)")
-    
+
     # Encode labels
     label_encoder = LabelEncoder()
     y_train_encoded = label_encoder.fit_transform(y_train)
     y_test_encoded = label_encoder.transform(y_test)
-    
+
+    input_size = X_train.shape[1]
+    num_classes = len(label_encoder.classes_)
+
+    # Optuna tuning if requested
+    best_params = None
+    if tune:
+        if verbose:
+            print(f"\n  Running Optuna architecture tuning ({n_trials} trials)...")
+
+        best_params, study = tune_architecture(
+            X_train, y_train_encoded, num_classes,
+            n_trials=n_trials,
+            n_folds=3,
+            num_epochs=10,  # Shorter epochs during tuning
+            device='cpu',
+            verbose=verbose
+        )
+
+        # Create model from best params
+        model = create_model_from_params(best_params, input_size, num_classes)
+        training_params = get_training_params_from_study(best_params)
+        learning_rate = training_params['learning_rate']
+        weight_decay = training_params['weight_decay']
+        batch_size = training_params['batch_size']
+
+        # Reconstruct hidden sizes for logging
+        n_layers = best_params['n_layers']
+        hidden_sizes = [best_params[f'hidden_size_{i}'] for i in range(n_layers)]
+
+        if verbose:
+            print(f"\n  Using tuned architecture: {input_size} → {hidden_sizes} → {num_classes}")
+            print(f"  Attention: {best_params.get('use_attention', True)}")
+    else:
+        # Use default architecture
+        hidden_sizes = CellTypeClassifier.get_architecture_for_input_size(input_size)
+        model = CellTypeClassifier(input_size, num_classes, hidden_sizes, dropout_rate=0.3)
+        learning_rate = 0.0001
+        weight_decay = 0.001
+        batch_size = 32
+
+        if verbose:
+            print(f"\n  Model: {input_size} inputs → {hidden_sizes} → {num_classes} classes")
+
     # Create data loaders
     train_dataset = TensorDataset(
         torch.FloatTensor(X_train),
@@ -137,41 +191,32 @@ def train_level_model(X_train, y_train, X_test, y_test, level_name, num_epochs=2
         torch.FloatTensor(X_test),
         torch.LongTensor(y_test_encoded)
     )
-    
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-    
-    # Model parameters
-    input_size = X_train.shape[1]
-    num_classes = len(label_encoder.classes_)
-    hidden_sizes = CellTypeClassifier.get_architecture_for_input_size(input_size)
-    
-    if verbose:
-        print(f"\n  Model: {input_size} inputs → {hidden_sizes} → {num_classes} classes")
-    
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
     # Train model
-    model = CellTypeClassifier(input_size, num_classes, hidden_sizes, dropout_rate=0.3)
     best_accuracy = train_model(
         model, train_loader, test_loader,
         num_epochs=num_epochs,
-        learning_rate=0.0001,
-        weight_decay=0.001,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
         patience=5,
         verbose=verbose
     )
-    
+
     # Final evaluation
     test_labels, test_preds = evaluate_model(model, test_loader)
     accuracy = accuracy_score(test_labels, test_preds)
-    
-    return model, label_encoder, accuracy, (test_labels, test_preds)
+
+    return model, label_encoder, accuracy, (test_labels, test_preds), best_params
 
 
 def main():
     # Parse arguments
     parser = argparse.ArgumentParser(description='Train hierarchical neural network for cell type classification')
     parser.add_argument('--data', type=str, required=True, help='Path to processed .h5ad file')
-    parser.add_argument('--tune', action='store_true', help='Enable hyperparameter tuning (not yet implemented)')
+    parser.add_argument('--tune', action='store_true', help='Enable Optuna hyperparameter tuning')
     args = parser.parse_args()
 
     # Setup paths
@@ -275,13 +320,17 @@ def main():
     print(f"Features: Gene expression only ({X_genes.shape[1]} genes)")
     
     X_level1 = X_genes
-    
-    model_level1, encoder_level1, acc_level1, (l1_labels, l1_preds) = train_level_model(
+
+    if args.tune:
+        print(f"\n  Optuna tuning enabled")
+
+    model_level1, encoder_level1, acc_level1, (l1_labels, l1_preds), l1_params = train_level_model(
         X_level1[train_idx], y_coarse[train_idx],
         X_level1[test_idx], y_coarse[test_idx],
         level_name="Level 1",
         num_epochs=20,
-        verbose=True
+        verbose=True,
+        tune=args.tune
     )
     
     print(f"\n✓ Level 1 Accuracy: {acc_level1:.1%}")
@@ -346,13 +395,14 @@ def main():
         
         # Train model for this group (use SMOTE for T_cells to handle imbalance)
         use_smote = (group_name == 'T_cells')
-        model, encoder, accuracy, (labels, preds) = train_level_model(
+        model, encoder, accuracy, (labels, preds), l2_params = train_level_model(
             X_group_train, y_group_train,
             X_group_test, y_group_test,
             level_name=f"Level 2 ({group_name})",
             num_epochs=25,
             verbose=True,
-            use_smote=use_smote
+            use_smote=use_smote,
+            tune=args.tune
         )
         
         level2_models[group_name] = model
@@ -426,13 +476,27 @@ def main():
     print(f"\nSaving models...")
     
     # Save Level 1 model
+    # Get architecture info
+    if l1_params is not None:
+        n_layers = l1_params['n_layers']
+        hidden_sizes = [l1_params[f'hidden_size_{i}'] for i in range(n_layers)]
+        use_attention = l1_params.get('use_attention', True)
+        attention_hidden = l1_params.get('attention_hidden', 128)
+    else:
+        hidden_sizes = CellTypeClassifier.get_architecture_for_input_size(X_level1.shape[1])
+        use_attention = True
+        attention_hidden = 128
+
     level1_data = {
         'model_state_dict': model_level1.state_dict(),
         'label_encoder': encoder_level1,
         'input_size': X_level1.shape[1],
-        'hidden_sizes': CellTypeClassifier.get_architecture_for_input_size(X_level1.shape[1]),
+        'hidden_sizes': hidden_sizes,
         'num_classes': len(encoder_level1.classes_),
         'accuracy': acc_level1,
+        'use_attention': use_attention,
+        'attention_hidden': attention_hidden,
+        'tuned_params': l1_params,
     }
     torch.save(level1_data, os.path.join(MODELS_DIR, 'hierarchical_level1.pt'))
     print(f"  ✓ Saved Level 1 model to models/hierarchical_level1.pt")
