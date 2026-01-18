@@ -7,6 +7,7 @@ from .tuning import (
     create_model_from_params,
     get_training_params_from_study,
 )
+from .focal_loss import FocalLoss, compute_class_weights
 
 __all__ = [
     'CellTypeClassifier',
@@ -16,4 +17,6 @@ __all__ = [
     'tune_architecture',
     'create_model_from_params',
     'get_training_params_from_study',
+    'FocalLoss',
+    'compute_class_weights',
 ]

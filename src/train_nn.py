@@ -16,8 +16,9 @@ from imblearn.over_sampling import SMOTE
 
 from models import CellTypeClassifier, train_model, evaluate_model
 from models import tune_architecture, create_model_from_params, get_training_params_from_study
+from models import compute_class_weights
 from utils import load_and_validate_data, load_gene_expression_and_features, add_symbolic_regression_features
-from utils import get_hierarchy_for_classifier
+from utils import get_hierarchy_for_classifier, add_pathway_features
 
 
 def get_coarse_label(fine_label, hierarchy):
@@ -49,7 +50,8 @@ def load_velocity_features(adata, boost_factor=2.0):
 
 
 def train_level_model(X_train, y_train, X_test, y_test, level_name, num_epochs=20,
-                      verbose=True, use_smote=False, tune=False, n_trials=30):
+                      verbose=True, use_smote=False, tune=False, n_trials=30,
+                      use_focal_loss=False, focal_gamma=2.0):
     """Train a model for one level of the hierarchy."""
 
     if use_smote:
@@ -118,8 +120,13 @@ def train_level_model(X_train, y_train, X_test, y_test, level_name, num_epochs=2
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
+    class_weights = None
+    if use_focal_loss:
+        class_weights = compute_class_weights(y_train_encoded, method='sqrt_inverse')
+
     train_model(model, train_loader, test_loader, num_epochs=num_epochs,
-                learning_rate=learning_rate, weight_decay=weight_decay, patience=5, verbose=verbose)
+                learning_rate=learning_rate, weight_decay=weight_decay, patience=5, verbose=verbose,
+                use_focal_loss=use_focal_loss, focal_gamma=focal_gamma, class_weights=class_weights)
 
     test_labels, test_preds = evaluate_model(model, test_loader)
     accuracy = accuracy_score(test_labels, test_preds)
@@ -161,6 +168,8 @@ def main():
     if X_velocity is not None:
         print(f"\nVelocity features: {X_velocity.shape}")
 
+    X_genes = add_pathway_features(adata, X_genes)
+
     X_symbolic = None
     if use_symbolic:
         X_temp = load_gene_expression_and_features(adata, use_velocity=True)
@@ -201,7 +210,8 @@ def main():
     model_level1, encoder_level1, acc_level1, (l1_labels, l1_preds), l1_params = train_level_model(
         X_level1[train_idx], y_coarse[train_idx],
         X_level1[test_idx], y_coarse[test_idx],
-        level_name="Level 1", num_epochs=20, verbose=True, tune=args.tune
+        level_name="Level 1", num_epochs=20, verbose=True, tune=args.tune,
+        use_focal_loss=True
     )
 
     print(f"\nLevel 1 Accuracy: {acc_level1:.1%}")
@@ -245,11 +255,11 @@ def main():
         X_group_test = X_level2_base[test_idx][group_mask_test]
         y_group_test = y_fine[test_idx][group_mask_test]
 
-        use_smote = (group_name == 'T_cells')
         model, encoder, accuracy, (labels, preds), l2_params = train_level_model(
             X_group_train, y_group_train, X_group_test, y_group_test,
             level_name=f"Level 2 ({group_name})", num_epochs=25,
-            verbose=True, use_smote=use_smote, tune=args.tune
+            verbose=True, use_smote=False, tune=args.tune,
+            use_focal_loss=True
         )
 
         level2_models[group_name] = model

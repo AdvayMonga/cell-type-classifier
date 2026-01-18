@@ -3,12 +3,15 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score
 
+from .focal_loss import FocalLoss, compute_class_weights
 
-def train_model(model, train_loader, test_loader, num_epochs=20, 
-                learning_rate=0.0001, weight_decay=0.001, patience=3, verbose=True):
+
+def train_model(model, train_loader, test_loader, num_epochs=20,
+                learning_rate=0.0001, weight_decay=0.001, patience=3, verbose=True,
+                use_focal_loss=False, focal_gamma=2.0, class_weights=None):
     """
     Train model with early stopping.
-    
+
     Args:
         model: PyTorch model to train
         train_loader: DataLoader for training data
@@ -18,11 +21,20 @@ def train_model(model, train_loader, test_loader, num_epochs=20,
         weight_decay: L2 regularization strength
         patience: Number of epochs to wait for improvement before stopping
         verbose: Print training progress
-    
+        use_focal_loss: Use focal loss instead of cross-entropy
+        focal_gamma: Gamma parameter for focal loss (higher = more focus on hard examples)
+        class_weights: Optional tensor of class weights
+
     Returns:
         float: Best test accuracy achieved
     """
-    criterion = nn.CrossEntropyLoss()
+    if use_focal_loss:
+        criterion = FocalLoss(alpha=class_weights, gamma=focal_gamma)
+        if verbose:
+            print(f"  Using Focal Loss (gamma={focal_gamma})")
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
     best_test_accuracy = 0
