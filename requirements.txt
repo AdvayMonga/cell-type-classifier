@@ -13,6 +13,7 @@ torch
 scvelo
 imbalanced-learn
 xgboost
+optuna
 
 # Symbolic regression (optional, for train_nn_with_symbolic.py)
 pysr>=0.16.0
